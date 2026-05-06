@@ -331,12 +331,62 @@ func (d *MyDriver) Close() error                       { return nil }
 
 ---
 
+## Observability (OpenTelemetry)
+
+```bash
+go get github.com/goncordia/goncordia/otel
+```
+
+```go
+import otelgoncordia "github.com/goncordia/goncordia/otel"
+
+wp := pgxdriver.NewWorkerPool(d, registry, goncordia.WorkerConfig{
+    Queues:      []string{"default"},
+    Concurrency: 10,
+    Middleware: []goncordia.JobMiddleware{
+        otelgoncordia.NewMiddleware(
+            // optional — defaults to otel.GetTracerProvider() / otel.GetMeterProvider()
+            otelgoncordia.WithTracerProvider(tp),
+            otelgoncordia.WithMeterProvider(mp),
+        ),
+    },
+})
+```
+
+Each job execution produces:
+
+- **Span** `goncordia.process` with attributes `goncordia.job.kind`, `goncordia.job.queue`, `goncordia.job.id`, `goncordia.job.attempt`
+- **Histogram** `goncordia.job.duration` (seconds) — labelled by kind, queue, status
+- **Counter** `goncordia.job.count` — labelled by kind, queue, status (`ok` / `error`)
+
+Panics are recovered, converted to errors, and recorded on the span before re-triggering the retry policy — the worker pool always stays alive.
+
+You can also add your own middleware for logging or custom metrics:
+
+```go
+func loggingMiddleware(ctx context.Context, job *core.RawJob, next func(context.Context, *core.RawJob) error) error {
+    slog.InfoContext(ctx, "job started", "kind", job.Kind, "id", job.ID)
+    err := next(ctx, job)
+    slog.InfoContext(ctx, "job finished", "kind", job.Kind, "err", err)
+    return err
+}
+
+goncordia.WorkerConfig{
+    Middleware: []goncordia.JobMiddleware{
+        otelgoncordia.NewMiddleware(),
+        loggingMiddleware,
+    },
+}
+```
+
+---
+
 ## Project layout
 
 ```
 goncordia/
 ├── client.go              # Client[TTx] — Enqueue, EnqueueTx, Cancel
-├── worker.go              # WorkerPool[TTx] — Start, Stop
+├── worker.go              # WorkerPool[TTx] — Start, Stop, JobMiddleware
 ├── core/
 │   ├── job.go             # JobArgs, Worker, InsertOpts, WorkerOpts
 │   ├── registry.go        # type-erased worker dispatch
@@ -350,6 +400,7 @@ goncordia/
 │   ├── bun/               # bun adapter (wraps stdlib)
 │   ├── mongodb/           # MongoDB 4.0+ replica set
 │   └── redis/             # Redis (at-least-once; Pub/Sub notifications)
+├── otel/                  # OpenTelemetry middleware (spans + metrics)
 └── internal/clock/        # Clock interface + MockClock
 ```
 

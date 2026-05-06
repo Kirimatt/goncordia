@@ -11,6 +11,11 @@ import (
 	"github.com/goncordia/goncordia/internal/clock"
 )
 
+// JobMiddleware wraps job execution. Call next to continue the chain.
+// Middleware is applied around the actual job handler, inside panic recovery,
+// so err is never nil when the handler panicked — panics are converted to errors.
+type JobMiddleware func(ctx context.Context, job *core.RawJob, next func(context.Context, *core.RawJob) error) error
+
 // WorkerConfig configures the worker pool.
 type WorkerConfig struct {
 	// Queues lists the queues this worker pool processes.
@@ -31,6 +36,9 @@ type WorkerConfig struct {
 	// Clock overrides the time source. Defaults to clock.Real{}.
 	// Inject clock.NewMock() in tests to control time.
 	Clock clock.Clock
+	// Middleware is applied around each job execution in order (outermost first).
+	// Use it to add tracing, logging, or metrics without modifying job handlers.
+	Middleware []JobMiddleware
 }
 
 // WorkerPool processes jobs from the queue using a pool of goroutines.
@@ -202,7 +210,7 @@ func (p *WorkerPool[TTx]) fetchAndDispatch(ctx context.Context) {
 	}
 }
 
-// processRow executes a single job with panic recovery, then updates its state.
+// processRow executes a single job, applies middleware, then updates its state.
 func (p *WorkerPool[TTx]) processRow(ctx context.Context, exec driver.Executor, row driver.JobRow) {
 	// Resolve effective MaxRetry: job-level overrides worker default; 0 means "use worker default".
 	maxRetry := row.MaxRetry
@@ -225,20 +233,33 @@ func (p *WorkerPool[TTx]) processRow(ctx context.Context, exec driver.Executor, 
 		Tags:       row.Tags,
 	}
 
-	var jobErr error
-	func() {
+	// Innermost handler: runs the job with panic recovery so middleware always
+	// sees a clean error return (panics are never propagated up the chain).
+	var handler func(context.Context, *core.RawJob) error
+	handler = func(ctx context.Context, job *core.RawJob) (err error) {
 		defer func() {
 			if r := recover(); r != nil {
 				switch v := r.(type) {
 				case error:
-					jobErr = v
+					err = v
 				default:
-					jobErr = &panicError{val: v}
+					err = &panicError{val: v}
 				}
 			}
 		}()
-		jobErr = p.registry.Process(ctx, raw)
-	}()
+		return p.registry.Process(ctx, job)
+	}
+
+	// Wrap with middleware in reverse order (last registered = innermost).
+	for i := len(p.config.Middleware) - 1; i >= 0; i-- {
+		mw := p.config.Middleware[i]
+		next := handler
+		handler = func(ctx context.Context, job *core.RawJob) error {
+			return mw(ctx, job, next)
+		}
+	}
+
+	jobErr := handler(ctx, raw)
 
 	if jobErr == nil {
 		_ = exec.JobSetStateIfRunning(ctx, driver.JobSetStateParams{
