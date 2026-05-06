@@ -331,6 +331,29 @@ func (d *MyDriver) Close() error                       { return nil }
 
 ---
 
+## Benchmarks
+
+```
+go test ./bench/... -bench=. -benchmem -benchtime=5s
+```
+
+Numbers on Apple M5 (single process, no network):
+
+| Benchmark | ops/s | ns/op | Notes |
+|---|---|---|---|
+| Enqueue — memory | 8 600 000 | 519 ns | in-memory mutex, no I/O |
+| Enqueue — SQLite | 138 000 | 25 µs | WAL mode, single connection |
+| EnqueueBatch(100) — memory | ~10 700 000 jobs/s | 48 µs/batch | |
+| EnqueueBatch(100) — SQLite | ~130 000 jobs/s | 2.7 ms/batch | single-writer bottleneck |
+| FetchAndComplete — memory | 10 000 | 514 µs | O(N) scan; use SQLite/Postgres for large queues |
+| FetchAndComplete — SQLite | 74 000 | 51 µs | indexed; faster than memory at scale |
+| End-to-end (1000 jobs) — memory c=10 | — | — | ~2 000 jobs/s |
+| End-to-end (1000 jobs) — SQLite c=4 | — | — | ~800 jobs/s |
+
+End-to-end numbers are bounded by the 5 ms poll interval in the benchmark, not by insert/fetch throughput. In production the pgxv5 driver uses LISTEN/NOTIFY, eliminating the poll delay entirely.
+
+---
+
 ## Observability (OpenTelemetry)
 
 ```bash
