@@ -195,33 +195,57 @@ func jobInsertMany(ctx context.Context, q querier, d Dialect, clk clock.Clock, p
 			args = []byte("{}")
 		}
 
-		p1 := d.placeholder(1)
-		insertSQL := fmt.Sprintf(`
+		// pgx/v5/stdlib sends []byte as bytea, not jsonb — pass JSON columns as string for Postgres.
+		var argsArg, tagsArg, errorsArg interface{}
+		if d == Postgres {
+			argsArg = string(args)
+			tagsArg = string(tagsJSON)
+			errorsArg = "[]"
+		} else {
+			argsArg = args
+			tagsArg = tagsJSON
+			errorsArg = []byte("[]")
+		}
+
+		sqlArgs := []any{
+			p.Queue, p.Kind, argsArg, string(state), p.Priority,
+			runAt, now, p.MaxRetry, p.Timeout.Milliseconds(),
+			uniqueKey, tagsArg, errorsArg,
+		}
+
+		var (
+			row    *driver.JobRow
+			rowErr error
+		)
+		if d == Postgres {
+			// Postgres: LastInsertId unsupported; use RETURNING.
+			insertSQL := fmt.Sprintf(`
 INSERT INTO goncordia_jobs
     (queue, kind, args, state, priority, run_at, created_at, max_retry, timeout_ms, unique_key, tags, errors)
-VALUES (%s)`,
-			d.placeholders(12, 1),
-		)
-
-		errorsDefault := []byte("[]")
-		res, err := q.ExecContext(ctx, insertSQL,
-			p.Queue, p.Kind, args, string(state), p.Priority,
-			runAt, now, p.MaxRetry, p.Timeout.Milliseconds(),
-			uniqueKey, tagsJSON, errorsDefault,
-		)
-		_ = p1
-		if err != nil {
-			return nil, fmt.Errorf("insert job: %w", err)
+VALUES (%s)
+RETURNING id`, d.placeholders(12, 1))
+			var insertedID string
+			if scanErr := q.QueryRowContext(ctx, insertSQL, sqlArgs...).Scan(&insertedID); scanErr != nil {
+				return nil, fmt.Errorf("insert job: %w", scanErr)
+			}
+			row, rowErr = jobGetByID(ctx, q, d, insertedID)
+		} else {
+			insertSQL := fmt.Sprintf(`
+INSERT INTO goncordia_jobs
+    (queue, kind, args, state, priority, run_at, created_at, max_retry, timeout_ms, unique_key, tags, errors)
+VALUES (%s)`, d.placeholders(12, 1))
+			res, execErr := q.ExecContext(ctx, insertSQL, sqlArgs...)
+			if execErr != nil {
+				return nil, fmt.Errorf("insert job: %w", execErr)
+			}
+			id, idErr := res.LastInsertId()
+			if idErr != nil {
+				return nil, fmt.Errorf("get last insert id: %w", idErr)
+			}
+			row, rowErr = jobGetByID(ctx, q, d, strconv.FormatInt(id, 10))
 		}
-
-		id, err := res.LastInsertId()
-		if err != nil {
-			return nil, fmt.Errorf("get last insert id: %w", err)
-		}
-
-		row, err := jobGetByID(ctx, q, d, strconv.FormatInt(id, 10))
-		if err != nil {
-			return nil, err
+		if rowErr != nil {
+			return nil, rowErr
 		}
 		results = append(results, driver.JobInsertResult{Job: row})
 	}
@@ -412,25 +436,33 @@ func jobSetStateIfRunning(ctx context.Context, q querier, d Dialect, clk clock.C
 }
 
 func jobSetStateIfRunningPostgres(ctx context.Context, q querier, id, targetState string, finalizedAt, retryAt *time.Time, entryJSON []byte) error {
-	// Wrap entryJSON in an array so errors || '[$4]'::jsonb concatenates JSONB arrays.
-	var errArrayJSON *string
-	if entryJSON != nil {
-		s := "[" + string(entryJSON) + "]"
-		errArrayJSON = &s
+	// Build SET clauses dynamically to avoid CASE IS NOT NULL with pointer params
+	// (pgx prepared statement type inference can be unreliable for nullable timestamps).
+	setClauses := []string{"state = $1"}
+	args := []any{targetState}
+	n := 2
+
+	if finalizedAt != nil {
+		setClauses = append(setClauses, fmt.Sprintf("finalized_at = $%d", n))
+		args = append(args, *finalizedAt)
+		n++
 	}
-	_, err := q.ExecContext(ctx, `
-UPDATE goncordia_jobs
-SET state        = $1,
-    finalized_at = CASE WHEN $2 IS NOT NULL THEN $2 ELSE finalized_at END,
-    run_at       = CASE WHEN $3 IS NOT NULL THEN $3 ELSE run_at END,
-    errors       = CASE WHEN $4 IS NOT NULL THEN errors || $4::jsonb ELSE errors END
-WHERE id = $5 AND state = 'running'`,
-		targetState,  // $1
-		finalizedAt,  // $2
-		retryAt,      // $3
-		errArrayJSON, // $4
-		id,           // $5
-	)
+	if retryAt != nil {
+		setClauses = append(setClauses, fmt.Sprintf("run_at = $%d", n))
+		args = append(args, *retryAt)
+		n++
+	}
+	if entryJSON != nil {
+		setClauses = append(setClauses, fmt.Sprintf("errors = errors || $%d::jsonb", n))
+		args = append(args, "["+string(entryJSON)+"]")
+		n++
+	}
+	args = append(args, id)
+
+	_, err := q.ExecContext(ctx, fmt.Sprintf(
+		"UPDATE goncordia_jobs SET %s WHERE id = $%d AND state = 'running'",
+		strings.Join(setClauses, ", "), n,
+	), args...)
 	return err
 }
 

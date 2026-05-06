@@ -14,7 +14,7 @@ CREATE TABLE IF NOT EXISTS goncordia_jobs (
     timeout_ms   BIGINT       NOT NULL DEFAULT 0,
     unique_key   TEXT,
     worker_id    TEXT,
-    tags         TEXT[]       NOT NULL DEFAULT '{}',
+    tags         JSONB        NOT NULL DEFAULT '[]',
     errors       JSONB        NOT NULL DEFAULT '[]'
 );
 

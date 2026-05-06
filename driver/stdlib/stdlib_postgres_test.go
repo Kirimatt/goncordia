@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	_ "github.com/go-sql-driver/mysql"
+	_ "github.com/jackc/pgx/v5/stdlib"
 
 	"github.com/goncordia/goncordia"
 	"github.com/goncordia/goncordia/core"
@@ -16,23 +16,24 @@ import (
 	"github.com/goncordia/goncordia/internal/clock"
 )
 
-func newMySQLDriver(t *testing.T, opts ...stdlibdriver.Option) *stdlibdriver.Driver {
+func newPostgresDriver(t *testing.T, opts ...stdlibdriver.Option) *stdlibdriver.Driver {
 	t.Helper()
 	ctx := context.Background()
 
-	db, err := sql.Open("mysql", mysqlDSN)
+	db, err := sql.Open("pgx", postgresDSN)
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
 
-	// Each test gets a fresh schema by using a unique DB name via a fresh migrate.
-	// Because we share the container we just drop/recreate tables.
-	if _, err := db.ExecContext(ctx, "DROP TABLE IF EXISTS goncordia_jobs, goncordia_queues"); err != nil {
+	// Drop and recreate tables for test isolation (shared container).
+	if _, err := db.ExecContext(ctx,
+		"DROP TABLE IF EXISTS goncordia_jobs; DROP TABLE IF EXISTS goncordia_queues",
+	); err != nil {
 		db.Close()
 		t.Fatalf("drop tables: %v", err)
 	}
 
-	d := stdlibdriver.New(db, stdlibdriver.MySQL, opts...)
+	d := stdlibdriver.New(db, stdlibdriver.Postgres, opts...)
 	if err := d.Migrate(ctx); err != nil {
 		db.Close()
 		t.Fatalf("migrate: %v", err)
@@ -41,8 +42,8 @@ func newMySQLDriver(t *testing.T, opts ...stdlibdriver.Option) *stdlibdriver.Dri
 	return d
 }
 
-func TestStdlibMySQL_EnqueueAndProcess(t *testing.T) {
-	d := newMySQLDriver(t)
+func TestStdlibPostgres_EnqueueAndProcess(t *testing.T) {
+	d := newPostgresDriver(t)
 	ctx := context.Background()
 
 	var processed atomic.Int64
@@ -78,8 +79,8 @@ func TestStdlibMySQL_EnqueueAndProcess(t *testing.T) {
 	wp.Stop()
 }
 
-func TestStdlibMySQL_EnqueueTx(t *testing.T) {
-	d := newMySQLDriver(t)
+func TestStdlibPostgres_EnqueueTx(t *testing.T) {
+	d := newPostgresDriver(t)
 	ctx := context.Background()
 	client := stdlibdriver.NewClient(d, goncordia.ClientConfig{})
 
@@ -109,8 +110,8 @@ func TestStdlibMySQL_EnqueueTx(t *testing.T) {
 	}
 }
 
-func TestStdlibMySQL_UniqueJobs(t *testing.T) {
-	d := newMySQLDriver(t)
+func TestStdlibPostgres_UniqueJobs(t *testing.T) {
+	d := newPostgresDriver(t)
 	ctx := context.Background()
 	client := stdlibdriver.NewClient(d, goncordia.ClientConfig{})
 	opts := &core.InsertOpts{UniqueOpts: &core.UniqueOpts{ByArgs: true, ByQueue: true}}
@@ -132,9 +133,9 @@ func TestStdlibMySQL_UniqueJobs(t *testing.T) {
 	}
 }
 
-func TestStdlibMySQL_ScheduledJob(t *testing.T) {
+func TestStdlibPostgres_ScheduledJob(t *testing.T) {
 	clk := clock.NewMock(time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC))
-	d := newMySQLDriver(t, stdlibdriver.WithClock(clk))
+	d := newPostgresDriver(t, stdlibdriver.WithClock(clk))
 	ctx := context.Background()
 	client := stdlibdriver.NewClient(d, goncordia.ClientConfig{})
 
@@ -157,9 +158,9 @@ func TestStdlibMySQL_ScheduledJob(t *testing.T) {
 	}
 }
 
-func TestStdlibMySQL_RetryAndDiscard(t *testing.T) {
+func TestStdlibPostgres_RetryAndDiscard(t *testing.T) {
 	clk := clock.NewMock(time.Now())
-	d := newMySQLDriver(t, stdlibdriver.WithClock(clk))
+	d := newPostgresDriver(t, stdlibdriver.WithClock(clk))
 	ctx := context.Background()
 
 	var attempts atomic.Int64
@@ -194,4 +195,37 @@ func TestStdlibMySQL_RetryAndDiscard(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 	}
 	wp.Stop()
+}
+
+func TestStdlibPostgres_SkipLocked(t *testing.T) {
+	// Verify that concurrent fetchers don't claim the same job (SKIP LOCKED).
+	d := newPostgresDriver(t)
+	ctx := context.Background()
+	client := stdlibdriver.NewClient(d, goncordia.ClientConfig{})
+
+	for i := 0; i < 10; i++ {
+		if _, err := client.Enqueue(ctx, EmailJob{To: "skip@test.com"}, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var totalClaimed atomic.Int64
+	fetch := func() {
+		rows, err := d.Executor().JobFetchBatch(ctx, stdlibdriver.FetchParams("default", 5))
+		if err != nil {
+			t.Errorf("fetch: %v", err)
+			return
+		}
+		totalClaimed.Add(int64(len(rows)))
+	}
+
+	// Two concurrent fetchers — combined should claim exactly 10 jobs, not more.
+	done := make(chan struct{})
+	go func() { fetch(); close(done) }()
+	fetch()
+	<-done
+
+	if got := totalClaimed.Load(); got != 10 {
+		t.Errorf("SKIP LOCKED: expected 10 claimed total, got %d", got)
+	}
 }
