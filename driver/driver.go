@@ -1,0 +1,215 @@
+// Package driver defines the interfaces that all storage backend drivers must implement.
+// Each backend (Postgres, MySQL, SQLite, MongoDB, Redis, in-memory) provides its own
+// implementation of Driver[TTx], parameterized by the transaction type native to that backend.
+package driver
+
+import (
+	"context"
+	"time"
+)
+
+// Driver is the top-level interface for a job queue storage backend.
+// TTx is the transaction type native to the backend library the user chose
+// (e.g. *pgx.Tx, *sql.Tx, mongo.Session).
+type Driver[TTx any] interface {
+	// Name returns a human-readable identifier ("postgres", "mongodb", "redis", "memory").
+	Name() string
+
+	// Capabilities reports which optional features this driver supports.
+	Capabilities() Capabilities
+
+	// Executor returns a non-transactional query executor.
+	Executor() Executor
+
+	// UnwrapTx converts a user-supplied transaction into our ExecutorTx.
+	// Used internally by Client.EnqueueTx so users pass their own tx type.
+	UnwrapTx(tx TTx) ExecutorTx
+
+	// Listener returns a push-notification listener, or nil if polling must be used.
+	Listener() Listener
+
+	// Close releases any resources held by the driver.
+	Close() error
+}
+
+// Capabilities describes which optional features a driver supports.
+// The engine checks these flags at startup and switches between
+// push notifications vs polling, native tx vs at-least-once, etc.
+type Capabilities struct {
+	// NativeTx means EnqueueTx is truly atomic (SQL/MongoDB replica set).
+	NativeTx bool
+	// ListenNotify means the backend supports push notifications (Postgres LISTEN/NOTIFY).
+	ListenNotify bool
+	// ChangeStreams means the backend supports MongoDB change streams.
+	ChangeStreams bool
+	// SkipLocked means the backend supports SELECT FOR UPDATE SKIP LOCKED.
+	SkipLocked bool
+	// UniqueJobs means the backend can enforce unique job constraints natively.
+	UniqueJobs bool
+	// AdvisoryLocks means the backend supports advisory locks for leader election.
+	AdvisoryLocks bool
+}
+
+// Executor executes job queue operations outside of a transaction.
+type Executor interface {
+	baseExecutor
+	// Begin starts a new transaction and returns an ExecutorTx.
+	Begin(ctx context.Context) (ExecutorTx, error)
+}
+
+// ExecutorTx executes job queue operations within an existing transaction.
+type ExecutorTx interface {
+	baseExecutor
+	Commit(ctx context.Context) error
+	Rollback(ctx context.Context) error
+}
+
+// baseExecutor groups the core data-access methods shared by both
+// transactional and non-transactional executors.
+type baseExecutor interface {
+	// --- Jobs ---
+
+	JobInsertMany(ctx context.Context, params []JobInsertParams) ([]JobInsertResult, error)
+	JobGetByID(ctx context.Context, id string) (*JobRow, error)
+	// JobFetchBatch atomically claims up to limit available jobs for processing.
+	// Implementations use SELECT FOR UPDATE SKIP LOCKED (SQL) or findOneAndUpdate (MongoDB).
+	JobFetchBatch(ctx context.Context, params FetchParams) ([]JobRow, error)
+	// JobSetStateIfRunning atomically transitions a running job to a terminal/retry state.
+	JobSetStateIfRunning(ctx context.Context, params JobSetStateParams) error
+	JobCancel(ctx context.Context, id string) error
+	JobDelete(ctx context.Context, id string) error
+	JobReschedule(ctx context.Context, params RescheduleParams) error
+
+	// --- Queues ---
+
+	QueueGet(ctx context.Context, name string) (*QueueRow, error)
+	QueuePause(ctx context.Context, name string) error
+	QueueResume(ctx context.Context, name string) error
+	QueueList(ctx context.Context, params QueueListParams) ([]*QueueRow, error)
+
+	// --- Leader election (only called when Capabilities.AdvisoryLocks == false, others use DB-specific mechanisms) ---
+
+	LeaderAttemptElect(ctx context.Context, params LeaderElectParams) (elected bool, err error)
+	LeaderResign(ctx context.Context, name string) error
+}
+
+// --- Parameter and result types ---
+
+// JobInsertParams carries the data needed to enqueue a new job.
+type JobInsertParams struct {
+	Queue     string
+	Kind      string    // job type name, used to dispatch to the right worker
+	Args      []byte    // JSON-encoded job arguments
+	Priority  int       // higher = processed first; default 0
+	RunAt     time.Time // zero means "immediately"
+	UniqueKey string    // optional; prevents duplicate jobs with the same key+state
+	MaxRetry  int
+	Timeout   time.Duration
+	Tags      []string
+}
+
+// JobInsertResult is returned after a successful insert.
+type JobInsertResult struct {
+	Job         *JobRow
+	UniqueSkip  bool // true if a duplicate was found and this insert was skipped
+}
+
+// FetchParams controls how many and which jobs a worker claims.
+type FetchParams struct {
+	Queue    string
+	Limit    int
+	WorkerID string
+}
+
+// JobSetStateParams transitions a running job to a new state.
+type JobSetStateParams struct {
+	ID       string
+	State    JobState
+	Err      *string   // serialized error for failed/retryable states
+	RetryAt  time.Time // populated when State == JobStateRetryable
+}
+
+// RescheduleParams reschedules a job to run at a future time.
+type RescheduleParams struct {
+	ID    string
+	RunAt time.Time
+}
+
+// QueueListParams controls pagination for QueueList.
+type QueueListParams struct {
+	Limit  int
+	Cursor string
+}
+
+// LeaderElectParams carries the parameters for a leader election attempt.
+type LeaderElectParams struct {
+	Name      string
+	WorkerID  string
+	TTL       time.Duration
+}
+
+// --- Row types ---
+
+// JobRow is the canonical in-memory representation of a job record.
+type JobRow struct {
+	ID          string
+	Queue       string
+	Kind        string
+	Args        []byte
+	State       JobState
+	Priority    int
+	RunAt       time.Time
+	CreatedAt   time.Time
+	AttemptedAt *time.Time
+	FinalizedAt *time.Time
+	AttemptNum  int
+	MaxRetry    int
+	Timeout     time.Duration
+	Tags        []string
+	Errors      []AttemptError
+	UniqueKey   string
+	WorkerID    string
+}
+
+// AttemptError records a single failed attempt.
+type AttemptError struct {
+	At      time.Time
+	Attempt int
+	Error   string
+	Trace   string
+}
+
+// QueueRow represents a queue metadata record.
+type QueueRow struct {
+	Name      string
+	Paused    bool
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+// JobState is the lifecycle state of a job.
+type JobState string
+
+const (
+	JobStateAvailable JobState = "available"
+	JobStateRunning   JobState = "running"
+	JobStateCompleted JobState = "completed"
+	JobStateRetryable JobState = "retryable"
+	JobStateDiscarded JobState = "discarded"
+	JobStateCancelled JobState = "cancelled"
+	JobStateScheduled JobState = "scheduled"
+)
+
+// Listener is optionally implemented by backends that support push notifications.
+// The engine uses it to avoid polling when a backend supports real-time notifications.
+// Return nil from Driver.Listener() to fall back to polling.
+type Listener interface {
+	Listen(ctx context.Context, queue string) (<-chan Notification, error)
+	Unlisten(ctx context.Context, queue string) error
+	Close() error
+}
+
+// Notification is a message from the backend indicating new jobs are available.
+type Notification struct {
+	Queue string
+}
