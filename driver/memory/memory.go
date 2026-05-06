@@ -1,17 +1,17 @@
 // Package memory provides an in-memory driver for testing and development.
 // It has no persistence — all jobs are lost on process restart.
-// TTx is struct{} since in-memory operations don't need real transactions.
+// TTx is NoTx since in-memory operations don't need real transactions.
 package memory
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"sort"
 	"sync"
 	"time"
 
 	"github.com/goncordia/goncordia/driver"
+	"github.com/goncordia/goncordia/internal/clock"
 )
 
 // NoTx is the transaction type for the memory driver.
@@ -25,22 +25,36 @@ type Driver struct {
 	queues map[string]*driver.QueueRow
 	seq    uint64
 	notify map[string][]chan driver.Notification
+	clk    clock.Clock
+}
+
+// Option configures a memory Driver.
+type Option func(*Driver)
+
+// WithClock injects a custom Clock (e.g. clock.NewMock() in tests).
+func WithClock(c clock.Clock) Option {
+	return func(d *Driver) { d.clk = c }
 }
 
 // New creates a new in-memory Driver.
-func New() *Driver {
-	return &Driver{
+func New(opts ...Option) *Driver {
+	d := &Driver{
 		jobs:   make(map[string]*driver.JobRow),
 		queues: make(map[string]*driver.QueueRow),
 		notify: make(map[string][]chan driver.Notification),
+		clk:    clock.Real{},
 	}
+	for _, o := range opts {
+		o(d)
+	}
+	return d
 }
 
 func (d *Driver) Name() string { return "memory" }
 
 func (d *Driver) Capabilities() driver.Capabilities {
 	return driver.Capabilities{
-		NativeTx:      true, // trivially: lock-based
+		NativeTx:      true,
 		SkipLocked:    true,
 		UniqueJobs:    true,
 		ListenNotify:  true,
@@ -48,13 +62,10 @@ func (d *Driver) Capabilities() driver.Capabilities {
 	}
 }
 
-func (d *Driver) Executor() driver.Executor { return &executor{d: d} }
-
-func (d *Driver) UnwrapTx(tx NoTx) driver.ExecutorTx { return &txExecutor{executor: executor{d: d}} }
-
-func (d *Driver) Listener() driver.Listener { return &listener{d: d} }
-
-func (d *Driver) Close() error { return nil }
+func (d *Driver) Executor() driver.Executor     { return &executor{d: d} }
+func (d *Driver) UnwrapTx(_ NoTx) driver.ExecutorTx { return &txExecutor{executor: executor{d: d}} }
+func (d *Driver) Listener() driver.Listener     { return &listener{d: d} }
+func (d *Driver) Close() error                  { return nil }
 
 // --- executor ---
 
@@ -64,13 +75,12 @@ func (e *executor) Begin(_ context.Context) (driver.ExecutorTx, error) {
 	return &txExecutor{executor: executor{d: e.d}}, nil
 }
 
-func (e *executor) JobInsertMany(ctx context.Context, params []driver.JobInsertParams) ([]driver.JobInsertResult, error) {
+func (e *executor) JobInsertMany(_ context.Context, params []driver.JobInsertParams) ([]driver.JobInsertResult, error) {
 	e.d.mu.Lock()
 	defer e.d.mu.Unlock()
 
 	results := make([]driver.JobInsertResult, 0, len(params))
 	for _, p := range params {
-		// Unique job check
 		if p.UniqueKey != "" {
 			if dup := e.d.findUniqueJob(p.Queue, p.UniqueKey); dup != nil {
 				results = append(results, driver.JobInsertResult{Job: dup, UniqueSkip: true})
@@ -80,7 +90,7 @@ func (e *executor) JobInsertMany(ctx context.Context, params []driver.JobInsertP
 
 		e.d.seq++
 		id := fmt.Sprintf("mem_%d", e.d.seq)
-		now := time.Now()
+		now := e.d.clk.Now()
 		runAt := p.RunAt
 		if runAt.IsZero() {
 			runAt = now
@@ -104,7 +114,7 @@ func (e *executor) JobInsertMany(ctx context.Context, params []driver.JobInsertP
 			UniqueKey: p.UniqueKey,
 		}
 		e.d.jobs[id] = row
-		e.d.ensureQueue(p.Queue)
+		e.d.ensureQueue(p.Queue, now)
 		e.d.broadcastNotify(p.Queue)
 
 		results = append(results, driver.JobInsertResult{Job: row})
@@ -132,17 +142,21 @@ func (e *executor) JobFetchBatch(_ context.Context, params driver.FetchParams) (
 		return nil, nil
 	}
 
-	now := time.Now()
+	now := e.d.clk.Now()
 	var candidates []*driver.JobRow
 	for _, j := range e.d.jobs {
-		if j.Queue == params.Queue &&
-			j.State == driver.JobStateAvailable &&
-			!j.RunAt.After(now) {
+		if j.Queue != params.Queue {
+			continue
+		}
+		// Promote scheduled jobs whose RunAt has passed
+		if j.State == driver.JobStateScheduled && !j.RunAt.After(now) {
+			j.State = driver.JobStateAvailable
+		}
+		if j.State == driver.JobStateAvailable && !j.RunAt.After(now) {
 			candidates = append(candidates, j)
 		}
 	}
 
-	// Sort: higher priority first, then earlier RunAt
 	sort.Slice(candidates, func(i, k int) bool {
 		if candidates[i].Priority != candidates[k].Priority {
 			return candidates[i].Priority > candidates[k].Priority
@@ -155,11 +169,11 @@ func (e *executor) JobFetchBatch(_ context.Context, params driver.FetchParams) (
 		limit = len(candidates)
 	}
 
-	now2 := time.Now()
 	rows := make([]driver.JobRow, 0, limit)
 	for _, j := range candidates[:limit] {
+		t := now
 		j.State = driver.JobStateRunning
-		j.AttemptedAt = &now2
+		j.AttemptedAt = &t
 		j.AttemptNum++
 		j.WorkerID = params.WorkerID
 		cp := *j
@@ -178,7 +192,7 @@ func (e *executor) JobSetStateIfRunning(_ context.Context, params driver.JobSetS
 	row.State = params.State
 	if params.Err != nil {
 		row.Errors = append(row.Errors, driver.AttemptError{
-			At:      time.Now(),
+			At:      e.d.clk.Now(),
 			Attempt: row.AttemptNum,
 			Error:   *params.Err,
 		})
@@ -187,8 +201,10 @@ func (e *executor) JobSetStateIfRunning(_ context.Context, params driver.JobSetS
 		row.RunAt = params.RetryAt
 		row.State = driver.JobStateAvailable
 	}
-	if params.State == driver.JobStateCompleted || params.State == driver.JobStateDiscarded || params.State == driver.JobStateCancelled {
-		now := time.Now()
+	if params.State == driver.JobStateCompleted ||
+		params.State == driver.JobStateDiscarded ||
+		params.State == driver.JobStateCancelled {
+		now := e.d.clk.Now()
 		row.FinalizedAt = &now
 	}
 	return nil
@@ -205,7 +221,7 @@ func (e *executor) JobCancel(_ context.Context, id string) error {
 		return fmt.Errorf("job %q is in state %s, can only cancel available/scheduled", id, row.State)
 	}
 	row.State = driver.JobStateCancelled
-	now := time.Now()
+	now := e.d.clk.Now()
 	row.FinalizedAt = &now
 	return nil
 }
@@ -243,7 +259,7 @@ func (e *executor) QueueGet(_ context.Context, name string) (*driver.QueueRow, e
 func (e *executor) QueuePause(_ context.Context, name string) error {
 	e.d.mu.Lock()
 	defer e.d.mu.Unlock()
-	e.d.ensureQueue(name)
+	e.d.ensureQueue(name, e.d.clk.Now())
 	e.d.queues[name].Paused = true
 	return nil
 }
@@ -251,12 +267,12 @@ func (e *executor) QueuePause(_ context.Context, name string) error {
 func (e *executor) QueueResume(_ context.Context, name string) error {
 	e.d.mu.Lock()
 	defer e.d.mu.Unlock()
-	e.d.ensureQueue(name)
+	e.d.ensureQueue(name, e.d.clk.Now())
 	e.d.queues[name].Paused = false
 	return nil
 }
 
-func (e *executor) QueueList(_ context.Context, params driver.QueueListParams) ([]*driver.QueueRow, error) {
+func (e *executor) QueueList(_ context.Context, _ driver.QueueListParams) ([]*driver.QueueRow, error) {
 	e.d.mu.Lock()
 	defer e.d.mu.Unlock()
 	rows := make([]*driver.QueueRow, 0, len(e.d.queues))
@@ -267,18 +283,15 @@ func (e *executor) QueueList(_ context.Context, params driver.QueueListParams) (
 	return rows, nil
 }
 
-func (e *executor) LeaderAttemptElect(_ context.Context, params driver.LeaderElectParams) (bool, error) {
-	// Single-process: always elected.
+func (e *executor) LeaderAttemptElect(_ context.Context, _ driver.LeaderElectParams) (bool, error) {
 	return true, nil
 }
 
 func (e *executor) LeaderResign(_ context.Context, _ string) error { return nil }
 
-// --- txExecutor wraps executor with commit/rollback no-ops ---
+// --- txExecutor ---
 
-type txExecutor struct {
-	executor
-}
+type txExecutor struct{ executor }
 
 func (t *txExecutor) Commit(_ context.Context) error   { return nil }
 func (t *txExecutor) Rollback(_ context.Context) error { return nil }
@@ -314,11 +327,11 @@ func (l *listener) Close() error {
 	return nil
 }
 
-// --- internal helpers ---
+// --- helpers ---
 
-func (d *Driver) ensureQueue(name string) {
+func (d *Driver) ensureQueue(name string, now time.Time) {
 	if _, ok := d.queues[name]; !ok {
-		d.queues[name] = &driver.QueueRow{Name: name, CreatedAt: time.Now(), UpdatedAt: time.Now()}
+		d.queues[name] = &driver.QueueRow{Name: name, CreatedAt: now, UpdatedAt: now}
 	}
 }
 
@@ -343,11 +356,17 @@ func (d *Driver) findUniqueJob(queue, uniqueKey string) *driver.JobRow {
 	return nil
 }
 
-// Ensure Driver satisfies the interface at compile time.
+// AllJobs returns a snapshot of all jobs for test inspection.
+func (d *Driver) AllJobs() []driver.JobRow {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	rows := make([]driver.JobRow, 0, len(d.jobs))
+	for _, j := range d.jobs {
+		rows = append(rows, *j)
+	}
+	return rows
+}
+
+// compile-time interface checks
 var _ driver.Driver[NoTx] = (*Driver)(nil)
-
-// Ensure executor satisfies the interface at compile time.
 var _ driver.Executor = (*executor)(nil)
-
-// Ensure json import is used (for future use or clarity)
-var _ = json.Marshal

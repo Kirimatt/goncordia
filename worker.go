@@ -8,6 +8,7 @@ import (
 
 	"github.com/goncordia/goncordia/core"
 	"github.com/goncordia/goncordia/driver"
+	"github.com/goncordia/goncordia/internal/clock"
 )
 
 // WorkerConfig configures the worker pool.
@@ -27,6 +28,9 @@ type WorkerConfig struct {
 	// ShutdownTimeout is the max duration to wait for in-flight jobs during shutdown.
 	// Default: 30 seconds.
 	ShutdownTimeout time.Duration
+	// Clock overrides the time source. Defaults to clock.Real{}.
+	// Inject clock.NewMock() in tests to control time.
+	Clock clock.Clock
 }
 
 // WorkerPool processes jobs from the queue using a pool of goroutines.
@@ -62,6 +66,9 @@ func NewWorkerPool[TTx any](d driver.Driver[TTx], registry *core.Registry, cfg W
 	if len(cfg.Queues) == 0 {
 		cfg.Queues = []string{"default"}
 	}
+	if cfg.Clock == nil {
+		cfg.Clock = clock.Real{}
+	}
 
 	return &WorkerPool[TTx]{
 		driver:     d,
@@ -95,13 +102,13 @@ func (p *WorkerPool[TTx]) Stop() {
 
 	select {
 	case <-done:
-	case <-time.After(p.config.ShutdownTimeout):
+	case <-p.config.Clock.After(p.config.ShutdownTimeout):
 	}
 }
 
 // runWithPolling polls the store at PollInterval when no push notifications are available.
 func (p *WorkerPool[TTx]) runWithPolling(ctx context.Context) error {
-	ticker := time.NewTicker(p.config.PollInterval)
+	ticker := p.config.Clock.NewTicker(p.config.PollInterval)
 	defer ticker.Stop()
 
 	for {
@@ -120,7 +127,7 @@ func (p *WorkerPool[TTx]) runWithPolling(ctx context.Context) error {
 // runWithNotifications listens for push notifications and fetches immediately on receipt.
 // A fallback ticker also polls periodically in case notifications are missed (e.g. queue resume).
 func (p *WorkerPool[TTx]) runWithNotifications(ctx context.Context, l driver.Listener) error {
-	fallbackTicker := time.NewTicker(p.config.PollInterval)
+	fallbackTicker := p.config.Clock.NewTicker(p.config.PollInterval)
 	defer fallbackTicker.Stop()
 
 	for _, q := range p.config.Queues {
@@ -166,7 +173,6 @@ func (p *WorkerPool[TTx]) fetchAndDispatch(ctx context.Context) {
 		return
 	}
 
-	// Determine how many slots are free
 	free := cap(p.sem) - len(p.sem)
 	if free <= 0 {
 		return
@@ -198,13 +204,24 @@ func (p *WorkerPool[TTx]) fetchAndDispatch(ctx context.Context) {
 
 // processRow executes a single job with panic recovery, then updates its state.
 func (p *WorkerPool[TTx]) processRow(ctx context.Context, exec driver.Executor, row driver.JobRow) {
+	// Resolve effective MaxRetry: job-level overrides worker default; 0 means "use worker default".
+	maxRetry := row.MaxRetry
+	if maxRetry <= 0 {
+		if opts, ok := p.registry.Opts(row.Kind); ok && opts.MaxRetry > 0 {
+			maxRetry = opts.MaxRetry
+		}
+	}
+	if maxRetry <= 0 {
+		maxRetry = 1 // bare minimum: at least one attempt
+	}
+
 	raw := &core.RawJob{
 		ID:         row.ID,
 		Queue:      row.Queue,
 		Kind:       row.Kind,
 		Args:       row.Args,
 		AttemptNum: row.AttemptNum,
-		MaxRetry:   row.MaxRetry,
+		MaxRetry:   maxRetry,
 		Tags:       row.Tags,
 	}
 
@@ -224,17 +241,16 @@ func (p *WorkerPool[TTx]) processRow(ctx context.Context, exec driver.Executor, 
 	}()
 
 	if jobErr == nil {
-		state := driver.JobSetStateParams{
+		_ = exec.JobSetStateIfRunning(ctx, driver.JobSetStateParams{
 			ID:    row.ID,
 			State: driver.JobStateCompleted,
-		}
-		_ = exec.JobSetStateIfRunning(ctx, state)
+		})
 		return
 	}
 
 	errStr := jobErr.Error()
 
-	if row.AttemptNum >= row.MaxRetry {
+	if row.AttemptNum >= maxRetry {
 		_ = exec.JobSetStateIfRunning(ctx, driver.JobSetStateParams{
 			ID:    row.ID,
 			State: driver.JobStateDiscarded,
@@ -243,7 +259,7 @@ func (p *WorkerPool[TTx]) processRow(ctx context.Context, exec driver.Executor, 
 		return
 	}
 
-	retryAt := p.config.RetryPolicy.NextRetryAt(row.AttemptNum, jobErr)
+	retryAt := p.config.RetryPolicy.NextRetryAt(row.AttemptNum, jobErr, p.config.Clock)
 	_ = exec.JobSetStateIfRunning(ctx, driver.JobSetStateParams{
 		ID:      row.ID,
 		State:   driver.JobStateRetryable,
