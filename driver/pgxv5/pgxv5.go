@@ -3,8 +3,8 @@
 // Usage:
 //
 //	pool, err := pgxpool.New(ctx, os.Getenv("DATABASE_URL"))
-//	d, err := pgxv5.New(pool)
-//	client := goncordia.NewClient(d, goncordia.ClientConfig{})
+//	d := pgxv5.New(pool)
+//	client := pgxv5.NewClient(d, goncordia.ClientConfig{})  // no type parameter needed
 //
 //	// Transactional insert — atomic with your business logic:
 //	tx, _ := pool.Begin(ctx)
@@ -21,6 +21,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	goncordia "github.com/goncordia/goncordia"
+	"github.com/goncordia/goncordia/core"
 	"github.com/goncordia/goncordia/driver"
 	"github.com/goncordia/goncordia/internal/clock"
 )
@@ -105,4 +107,20 @@ func (d *Driver) Close() error {
 // FetchParams is a convenience constructor for driver.FetchParams used in tests.
 func FetchParams(queue string, limit int) driver.FetchParams {
 	return driver.FetchParams{Queue: queue, Limit: limit}
+}
+
+// Client is a type alias so callers never write goncordia.Client[pgx.Tx].
+type Client = goncordia.Client[pgx.Tx]
+
+// WorkerPool is a type alias so callers never write goncordia.WorkerPool[pgx.Tx].
+type WorkerPool = goncordia.WorkerPool[pgx.Tx]
+
+// NewClient creates a Client bound to this pgxv5 driver.
+func NewClient(d *Driver, cfg goncordia.ClientConfig) *Client {
+	return goncordia.NewClient[pgx.Tx](d, cfg)
+}
+
+// NewWorkerPool creates a WorkerPool bound to this pgxv5 driver.
+func NewWorkerPool(d *Driver, r *core.Registry, cfg goncordia.WorkerConfig) *WorkerPool {
+	return goncordia.NewWorkerPool[pgx.Tx](d, r, cfg)
 }
