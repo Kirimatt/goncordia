@@ -395,61 +395,80 @@ func jobSetStateIfRunning(ctx context.Context, q querier, d Dialect, clk clock.C
 		retryAt = &params.RetryAt
 	}
 
-	var errJSON []byte
+	var entryJSON []byte // single AttemptError encoded as JSON object
 	if params.Err != nil {
 		entry := driver.AttemptError{At: clk.Now(), Error: *params.Err}
-		b, _ := json.Marshal([]driver.AttemptError{entry})
-		errJSON = b
+		entryJSON, _ = json.Marshal(entry)
 	}
 
-	updateSQL := fmt.Sprintf(`
+	switch d {
+	case SQLite:
+		return jobSetStateIfRunningSQLite(ctx, q, d, params.ID, targetState, finalizedAt, retryAt, entryJSON)
+	case MySQL:
+		return jobSetStateIfRunningMySQL(ctx, q, params.ID, targetState, finalizedAt, retryAt, entryJSON)
+	default: // Postgres: JSONB concat via ||, cast string to jsonb
+		return jobSetStateIfRunningPostgres(ctx, q, params.ID, targetState, finalizedAt, retryAt, entryJSON)
+	}
+}
+
+func jobSetStateIfRunningPostgres(ctx context.Context, q querier, id, targetState string, finalizedAt, retryAt *time.Time, entryJSON []byte) error {
+	// Wrap entryJSON in an array so errors || '[$4]'::jsonb concatenates JSONB arrays.
+	var errArrayJSON *string
+	if entryJSON != nil {
+		s := "[" + string(entryJSON) + "]"
+		errArrayJSON = &s
+	}
+	_, err := q.ExecContext(ctx, `
 UPDATE goncordia_jobs
-SET state        = %s,
-    finalized_at = CASE WHEN %s IS NOT NULL THEN %s ELSE finalized_at END,
-    run_at       = CASE WHEN %s IS NOT NULL THEN %s ELSE run_at END,
-    errors       = CASE WHEN %s IS NOT NULL THEN (errors || %s) ELSE errors END
-WHERE id = %s AND state = 'running'`,
-		d.placeholder(1),
-		d.placeholder(2), d.placeholder(3),
-		d.placeholder(4), d.placeholder(5),
-		d.placeholder(6), d.placeholder(7),
-		d.placeholder(8),
-	)
-
-	// For SQLite, || on TEXT is string concat; we need JSON concat separately
-	if d == SQLite {
-		return jobSetStateIfRunningSQLite(ctx, q, d, clk, params, targetState, finalizedAt, retryAt, errJSON)
-	}
-
-	_, err := q.ExecContext(ctx, updateSQL,
-		targetState,
-		finalizedAt, finalizedAt,
-		retryAt, retryAt,
-		errJSON, errJSON,
-		params.ID,
+SET state        = $1,
+    finalized_at = CASE WHEN $2 IS NOT NULL THEN $2 ELSE finalized_at END,
+    run_at       = CASE WHEN $3 IS NOT NULL THEN $3 ELSE run_at END,
+    errors       = CASE WHEN $4 IS NOT NULL THEN errors || $4::jsonb ELSE errors END
+WHERE id = $5 AND state = 'running'`,
+		targetState,  // $1
+		finalizedAt,  // $2
+		retryAt,      // $3
+		errArrayJSON, // $4
+		id,           // $5
 	)
 	return err
 }
 
-func jobSetStateIfRunningSQLite(ctx context.Context, q querier, d Dialect, clk clock.Clock, params driver.JobSetStateParams, targetState string, finalizedAt, retryAt *time.Time, errJSON []byte) error {
-	if errJSON != nil {
-		// Append to errors JSON array in SQLite using json_insert trick
-		appendSQL := fmt.Sprintf(`
-UPDATE goncordia_jobs
-SET errors = json_insert(errors, '$[#]', json(%s))
-WHERE id = %s AND state = 'running'`,
-			d.placeholder(1), d.placeholder(2),
-		)
-		// errJSON is a JSON array with one element — extract the element
-		var entries []driver.AttemptError
-		_ = json.Unmarshal(errJSON, &entries)
-		entryJSON, _ := json.Marshal(entries[0])
-		if _, err := q.ExecContext(ctx, appendSQL, entryJSON, params.ID); err != nil {
+func jobSetStateIfRunningMySQL(ctx context.Context, q querier, id, targetState string, finalizedAt, retryAt *time.Time, entryJSON []byte) error {
+	if entryJSON != nil {
+		// Append the new error entry to the JSON array first.
+		if _, err := q.ExecContext(ctx,
+			`UPDATE goncordia_jobs SET errors = JSON_ARRAY_APPEND(errors, '$', CAST(? AS JSON)) WHERE id = ? AND state = 'running'`,
+			string(entryJSON), id,
+		); err != nil {
 			return err
 		}
 	}
+	_, err := q.ExecContext(ctx, `
+UPDATE goncordia_jobs
+SET state        = ?,
+    finalized_at = CASE WHEN ? IS NOT NULL THEN ? ELSE finalized_at END,
+    run_at       = CASE WHEN ? IS NOT NULL THEN ? ELSE run_at END
+WHERE id = ? AND state = 'running'`,
+		targetState,
+		finalizedAt, finalizedAt,
+		retryAt, retryAt,
+		id,
+	)
+	return err
+}
 
-	updateSQL := fmt.Sprintf(`
+func jobSetStateIfRunningSQLite(ctx context.Context, q querier, d Dialect, id, targetState string, finalizedAt, retryAt *time.Time, entryJSON []byte) error {
+	if entryJSON != nil {
+		if _, err := q.ExecContext(ctx,
+			fmt.Sprintf(`UPDATE goncordia_jobs SET errors = json_insert(errors, '$[#]', json(%s)) WHERE id = %s AND state = 'running'`,
+				d.placeholder(1), d.placeholder(2)),
+			string(entryJSON), id,
+		); err != nil {
+			return err
+		}
+	}
+	_, err := q.ExecContext(ctx, fmt.Sprintf(`
 UPDATE goncordia_jobs
 SET state        = %s,
     finalized_at = CASE WHEN %s IS NOT NULL THEN %s ELSE finalized_at END,
@@ -459,12 +478,11 @@ WHERE id = %s AND state = 'running'`,
 		d.placeholder(2), d.placeholder(3),
 		d.placeholder(4), d.placeholder(5),
 		d.placeholder(6),
-	)
-	_, err := q.ExecContext(ctx, updateSQL,
+	),
 		targetState,
 		finalizedAt, finalizedAt,
 		retryAt, retryAt,
-		params.ID,
+		id,
 	)
 	return err
 }

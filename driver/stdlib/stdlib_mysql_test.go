@@ -1,0 +1,235 @@
+package stdlib_test
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+	"os"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	_ "github.com/go-sql-driver/mysql"
+	"github.com/testcontainers/testcontainers-go"
+	tcmysql "github.com/testcontainers/testcontainers-go/modules/mysql"
+	"github.com/testcontainers/testcontainers-go/wait"
+
+	"github.com/goncordia/goncordia"
+	"github.com/goncordia/goncordia/core"
+	stdlibdriver "github.com/goncordia/goncordia/driver/stdlib"
+	"github.com/goncordia/goncordia/internal/clock"
+)
+
+// shared MySQL container for all MySQL tests in this package.
+var mysqlDSN string
+
+func TestMain(m *testing.M) {
+	ctx := context.Background()
+
+	ctr, err := tcmysql.Run(ctx,
+		"mysql:8.0",
+		tcmysql.WithDatabase("goncordia_test"),
+		tcmysql.WithUsername("goncordia"),
+		tcmysql.WithPassword("goncordia"),
+		testcontainers.WithWaitStrategy(
+			wait.ForLog("port: 3306  MySQL Community Server").
+				WithStartupTimeout(90*time.Second),
+		),
+	)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "start mysql container: %v\n", err)
+		os.Exit(1)
+	}
+	defer ctr.Terminate(ctx) //nolint:errcheck
+
+	dsn, err := ctr.ConnectionString(ctx)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "get connection string: %v\n", err)
+		os.Exit(1)
+	}
+	// parseTime=true: MySQL driver returns DATETIME as time.Time instead of []byte
+	mysqlDSN = dsn + "?parseTime=true"
+
+	os.Exit(m.Run())
+}
+
+func newMySQLDriver(t *testing.T, opts ...stdlibdriver.Option) *stdlibdriver.Driver {
+	t.Helper()
+	ctx := context.Background()
+
+	db, err := sql.Open("mysql", mysqlDSN)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+
+	// Each test gets a fresh schema by using a unique DB name via a fresh migrate.
+	// Because we share the container we just drop/recreate tables.
+	if _, err := db.ExecContext(ctx, "DROP TABLE IF EXISTS goncordia_jobs, goncordia_queues"); err != nil {
+		db.Close()
+		t.Fatalf("drop tables: %v", err)
+	}
+
+	d := stdlibdriver.New(db, stdlibdriver.MySQL, opts...)
+	if err := d.Migrate(ctx); err != nil {
+		db.Close()
+		t.Fatalf("migrate: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	return d
+}
+
+func TestStdlibMySQL_EnqueueAndProcess(t *testing.T) {
+	d := newMySQLDriver(t)
+	ctx := context.Background()
+
+	var processed atomic.Int64
+	registry := core.NewRegistry()
+	core.RegisterWorker(registry, core.WorkerFunc[EmailJob](func(_ context.Context, _ *core.Job[EmailJob]) error {
+		processed.Add(1)
+		return nil
+	}), core.WorkerOpts{Queue: "default", MaxRetry: 3})
+
+	client := stdlibdriver.NewClient(d, goncordia.ClientConfig{})
+	for i := 0; i < 5; i++ {
+		if _, err := client.Enqueue(ctx, EmailJob{To: "a@b.com", Subject: "hi"}, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	wp := stdlibdriver.NewWorkerPool(d, registry, goncordia.WorkerConfig{
+		Queues:       []string{"default"},
+		Concurrency:  5,
+		PollInterval: 100 * time.Millisecond,
+	})
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go wp.Start(runCtx) //nolint:errcheck
+
+	deadline := time.Now().Add(15 * time.Second)
+	for processed.Load() < 5 {
+		if time.Now().After(deadline) {
+			t.Fatalf("timeout: processed %d/5", processed.Load())
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	wp.Stop()
+}
+
+func TestStdlibMySQL_EnqueueTx(t *testing.T) {
+	d := newMySQLDriver(t)
+	ctx := context.Background()
+	client := stdlibdriver.NewClient(d, goncordia.ClientConfig{})
+
+	tx, err := d.DB().BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := client.EnqueueTx(ctx, tx, EmailJob{To: "tx@test.com", Subject: "tx"}, nil)
+	if err != nil {
+		tx.Rollback() //nolint:errcheck
+		t.Fatal(err)
+	}
+	if result.Job == nil {
+		t.Fatal("expected non-nil job")
+	}
+
+	if err := tx.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+
+	rows, err := d.Executor().JobFetchBatch(ctx, stdlibdriver.FetchParams("default", 10))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("expected 0 jobs after rollback, got %d", len(rows))
+	}
+}
+
+func TestStdlibMySQL_UniqueJobs(t *testing.T) {
+	d := newMySQLDriver(t)
+	ctx := context.Background()
+	client := stdlibdriver.NewClient(d, goncordia.ClientConfig{})
+	opts := &core.InsertOpts{UniqueOpts: &core.UniqueOpts{ByArgs: true, ByQueue: true}}
+
+	r1, err := client.Enqueue(ctx, EmailJob{To: "dup@test.com", Subject: "Hello"}, opts)
+	if err != nil {
+		t.Fatalf("first insert: %v", err)
+	}
+	if r1.UniqueSkip {
+		t.Fatal("first insert should not be duplicate")
+	}
+
+	r2, err := client.Enqueue(ctx, EmailJob{To: "dup@test.com", Subject: "Hello"}, opts)
+	if err != nil {
+		t.Fatalf("second insert: %v", err)
+	}
+	if !r2.UniqueSkip {
+		t.Fatal("expected second insert to be duplicate")
+	}
+}
+
+func TestStdlibMySQL_ScheduledJob(t *testing.T) {
+	clk := clock.NewMock(time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC))
+	d := newMySQLDriver(t, stdlibdriver.WithClock(clk))
+	ctx := context.Background()
+	client := stdlibdriver.NewClient(d, goncordia.ClientConfig{})
+
+	_, err := client.Enqueue(ctx, EmailJob{To: "scheduled@test.com"}, &core.InsertOpts{
+		RunAt: clk.Now().Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rows, _ := d.Executor().JobFetchBatch(ctx, stdlibdriver.FetchParams("default", 10))
+	if len(rows) != 0 {
+		t.Fatalf("expected 0 before RunAt, got %d", len(rows))
+	}
+
+	clk.Advance(2 * time.Hour)
+	rows, _ = d.Executor().JobFetchBatch(ctx, stdlibdriver.FetchParams("default", 10))
+	if len(rows) != 1 {
+		t.Fatalf("expected 1 after RunAt, got %d", len(rows))
+	}
+}
+
+func TestStdlibMySQL_RetryAndDiscard(t *testing.T) {
+	clk := clock.NewMock(time.Now())
+	d := newMySQLDriver(t, stdlibdriver.WithClock(clk))
+	ctx := context.Background()
+
+	var attempts atomic.Int64
+	registry := core.NewRegistry()
+	core.RegisterWorker(registry, core.WorkerFunc[EmailJob](func(_ context.Context, _ *core.Job[EmailJob]) error {
+		attempts.Add(1)
+		return errors.New("always fails")
+	}), core.WorkerOpts{Queue: "default", MaxRetry: 2})
+
+	client := stdlibdriver.NewClient(d, goncordia.ClientConfig{})
+	if _, err := client.Enqueue(ctx, EmailJob{To: "fail@test.com"}, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	wp := stdlibdriver.NewWorkerPool(d, registry, goncordia.WorkerConfig{
+		Queues:       []string{"default"},
+		Concurrency:  1,
+		PollInterval: 100 * time.Millisecond,
+		RetryPolicy:  core.FixedRetry{Delay: 100 * time.Millisecond},
+		Clock:        clk,
+	})
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go wp.Start(runCtx) //nolint:errcheck
+
+	deadline := time.Now().Add(30 * time.Second)
+	for attempts.Load() < 2 {
+		if time.Now().After(deadline) {
+			t.Fatalf("timeout: only %d attempts", attempts.Load())
+		}
+		clk.Advance(200 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond)
+	}
+	wp.Stop()
+}
