@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/testcontainers/testcontainers-go"
+	"github.com/testcontainers/testcontainers-go/wait"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 
 	"github.com/goncordia/goncordia"
@@ -30,13 +32,18 @@ func newTestPool(t *testing.T) (*pgxpool.Pool, func()) {
 	ctx := context.Background()
 
 	ctr, err := tcpostgres.Run(ctx,
-		"postgres:16-alpine",
+		"postgres:17",
 		tcpostgres.WithDatabase("goncordia_test"),
 		tcpostgres.WithUsername("goncordia"),
 		tcpostgres.WithPassword("goncordia"),
+		testcontainers.WithWaitStrategy(
+			wait.ForLog("database system is ready to accept connections").
+				WithOccurrence(2).
+				WithStartupTimeout(30*time.Second),
+		),
 	)
 	if err != nil {
-		t.Skipf("Docker not available, skipping integration test: %v", err)
+		t.Fatalf("start postgres container: %v", err)
 	}
 
 	dsn, err := ctr.ConnectionString(ctx, "sslmode=disable")
@@ -170,8 +177,11 @@ func TestPgxv5_UniqueJobs(t *testing.T) {
 	opts := &core.InsertOpts{UniqueOpts: &core.UniqueOpts{ByArgs: true, ByQueue: true}}
 
 	r1, err := client.Enqueue(ctx, EmailJob{To: "dup@test.com", Subject: "Hello"}, opts)
-	if err != nil || r1.UniqueSkip {
-		t.Fatalf("first insert: err=%v skip=%v", err, r1.UniqueSkip)
+	if err != nil {
+		t.Fatalf("first insert failed: %v", err)
+	}
+	if r1.UniqueSkip {
+		t.Fatal("first insert should not be a duplicate")
 	}
 
 	r2, err := client.Enqueue(ctx, EmailJob{To: "dup@test.com", Subject: "Hello"}, opts)

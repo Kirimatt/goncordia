@@ -177,6 +177,11 @@ func jobInsertMany(ctx context.Context, q querier, clk clock.Clock, params []dri
 			state = driver.JobStateScheduled
 		}
 
+		tags := p.Tags
+		if tags == nil {
+			tags = []string{}
+		}
+
 		var uniqueKey *string
 		if p.UniqueKey != "" {
 			uniqueKey = &p.UniqueKey
@@ -197,7 +202,7 @@ RETURNING id, queue, kind, args, state, priority, run_at, created_at,
 		row := q.QueryRow(ctx, insertSQL,
 			p.Queue, p.Kind, p.Args, string(state), p.Priority, runAt, now,
 			p.MaxRetry, p.Timeout.Milliseconds(),
-			uniqueKey, p.Tags,
+			uniqueKey, tags,
 		)
 
 		jobRow, err := scanJobRow(row)
@@ -251,7 +256,7 @@ func jobFetchBatch(ctx context.Context, q querier, clk clock.Clock, params drive
 WITH fetched AS (
     SELECT id FROM goncordia_jobs
     WHERE queue = $1
-      AND state = 'available'
+      AND state IN ('available', 'scheduled')
       AND run_at <= $2
     ORDER BY priority DESC, run_at
     LIMIT $3
