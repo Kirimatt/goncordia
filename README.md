@@ -1,8 +1,8 @@
 # goncordia
 
-A transactional job queue engine for Go. Works with the database you already have — PostgreSQL, MySQL, SQLite, or in-memory — through a single `Driver[TTx]` interface parameterized by your library's native transaction type.
+A job queue engine for Go that works with the database you already have.
 
-**Key property:** when you call `EnqueueTx`, the job enters the queue if and only if the surrounding business transaction commits. No separate broker, no outbox table, no dual writes.
+One `Driver[TTx]` interface parameterized by your library's native transaction type covers Postgres, MySQL, SQLite, MongoDB, Redis, and in-memory — without forcing you to adopt a new dependency.
 
 ```go
 tx, _ := pool.Begin(ctx)
@@ -15,13 +15,13 @@ tx.Commit(ctx)  // job and order appear atomically
 
 ## Features
 
-- **Transactional inserts** — `EnqueueTx` shares your `*pgx.Tx` / `*sql.Tx`; atomicity is guaranteed by the database
+- **Transactional inserts** — `EnqueueTx` shares your existing transaction; the job appears if and only if that transaction commits
 - **Scheduled jobs** — `InsertOpts.RunAt` for future execution
 - **Priority queues** — higher priority processed first within a queue
 - **Unique jobs** — deduplicate by kind, args, queue, or time window
 - **Retry with backoff** — exponential (default), fixed, or custom `RetryPolicy`
 - **Queue pause/resume** — drain a queue without stopping workers
-- **LISTEN/NOTIFY** — push-based dispatch for pgxv5 (zero-latency); polling fallback for everything else
+- **Push notifications** — LISTEN/NOTIFY (Postgres), Change Streams (MongoDB), Pub/Sub (Redis); polling fallback elsewhere
 - **SKIP LOCKED** — lock-free concurrent fetching on Postgres and MySQL
 - **MockClock** — deterministic time control for tests; no `time.Sleep`
 
@@ -29,13 +29,15 @@ tx.Commit(ctx)  // job and order appear atomically
 
 ## Backends
 
-| Driver | Package | Tx type | Notes |
-|---|---|---|---|
-| PostgreSQL (pgx v5) | `driver/pgxv5` | `pgx.Tx` | LISTEN/NOTIFY, advisory locks, SKIP LOCKED |
-| PostgreSQL (database/sql) | `driver/stdlib` | `*sql.Tx` | pgx stdlib adapter; SKIP LOCKED |
-| MySQL 8.0+ | `driver/stdlib` | `*sql.Tx` | SKIP LOCKED |
-| SQLite | `driver/stdlib` | `*sql.Tx` | single-writer, no SKIP LOCKED |
-| In-memory | `driver/memory` | `memory.NoTx` | for tests; no persistence |
+| Driver | Package | Tx type | Atomic insert | Notes |
+|---|---|---|---|---|
+| PostgreSQL (pgx v5) | `driver/pgxv5` | `pgx.Tx` | ✅ | LISTEN/NOTIFY, advisory locks, SKIP LOCKED |
+| PostgreSQL / MySQL / SQLite | `driver/stdlib` | `*sql.Tx` | ✅ | pgx stdlib, go-sql-driver/mysql, modernc sqlite |
+| gorm | `driver/gorm` | `*gorm.DB` | ✅ | thin adapter over stdlib |
+| bun | `driver/bun` | `bun.Tx` | ✅ | thin adapter over stdlib |
+| MongoDB 4.0+ | `driver/mongodb` | `mongo.SessionContext` | ✅ | replica set required |
+| Redis | `driver/redis` | `NoTx` | ❌ | at-least-once; Pub/Sub notifications |
+| In-memory | `driver/memory` | `memory.NoTx` | ✅ | no persistence; for tests |
 
 ---
 
@@ -48,16 +50,23 @@ go get github.com/goncordia/goncordia
 Pick a driver:
 
 ```bash
-# PostgreSQL via pgx
-go get github.com/goncordia/goncordia/driver/pgxv5
-go get github.com/jackc/pgx/v5
+# PostgreSQL via pgx v5
+go get github.com/goncordia/goncordia/driver/pgxv5 github.com/jackc/pgx/v5
 
 # PostgreSQL / MySQL / SQLite via database/sql
 go get github.com/goncordia/goncordia/driver/stdlib
 
-# PostgreSQL: go get github.com/jackc/pgx/v5/stdlib
-# MySQL:      go get github.com/go-sql-driver/mysql
-# SQLite:     go get modernc.org/sqlite
+# gorm adapter
+go get github.com/goncordia/goncordia/driver/gorm gorm.io/gorm
+
+# bun adapter
+go get github.com/goncordia/goncordia/driver/bun github.com/uptrace/bun
+
+# MongoDB (replica set required)
+go get github.com/goncordia/goncordia/driver/mongodb go.mongodb.org/mongo-driver/mongo
+
+# Redis
+go get github.com/goncordia/goncordia/driver/redis github.com/redis/go-redis/v9
 ```
 
 ---
@@ -74,19 +83,16 @@ import (
     "github.com/jackc/pgx/v5/pgxpool"
 )
 
-// 1. Connect and migrate
 pool, _ := pgxpool.New(ctx, os.Getenv("DATABASE_URL"))
 d := pgxdriver.New(pool)
 d.Migrate(ctx)
 
-// 2. Define a job
 type SendEmailArgs struct {
     To      string `json:"to"`
     Subject string `json:"subject"`
 }
 func (SendEmailArgs) Kind() string { return "send_email" }
 
-// 3. Register a worker
 registry := core.NewRegistry()
 core.RegisterWorker(registry, core.WorkerFunc[SendEmailArgs](
     func(ctx context.Context, job *core.Job[SendEmailArgs]) error {
@@ -94,57 +100,119 @@ core.RegisterWorker(registry, core.WorkerFunc[SendEmailArgs](
     },
 ), core.WorkerOpts{MaxRetry: 5})
 
-// 4. Enqueue a job
 client := pgxdriver.NewClient(d, goncordia.ClientConfig{})
 client.Enqueue(ctx, SendEmailArgs{To: "user@example.com", Subject: "Welcome"}, nil)
 
-// 5. Start a worker pool
-pool := pgxdriver.NewWorkerPool(d, registry, goncordia.WorkerConfig{
+wp := pgxdriver.NewWorkerPool(d, registry, goncordia.WorkerConfig{
     Queues:      []string{"default"},
     Concurrency: 10,
 })
-pool.Start(ctx)  // blocks; call pool.Stop() to drain gracefully
+wp.Start(ctx)  // blocks; call wp.Stop() to drain gracefully
 ```
 
-### Transactional insert
+### Transactional insert (PostgreSQL)
 
 ```go
 tx, _ := pool.Begin(ctx)
-_, _ = db.CreateOrder(ctx, tx, orderParams)
+_, _ = queries.CreateOrder(ctx, tx, orderParams)
 _, _ = client.EnqueueTx(ctx, tx, SendConfirmationArgs{OrderID: id}, nil)
-tx.Commit(ctx)  // both committed atomically, or both rolled back
+tx.Commit(ctx)  // job and order are atomic
 ```
 
-### SQLite (no Docker, great for tests)
+### MongoDB
+
+```go
+import (
+    mongodriver "github.com/goncordia/goncordia/driver/mongodb"
+    "go.mongodb.org/mongo-driver/mongo"
+    "go.mongodb.org/mongo-driver/mongo/options"
+)
+
+client, _ := mongo.Connect(ctx, options.Client().ApplyURI(os.Getenv("MONGO_URI")))
+d, err := mongodriver.New(ctx, client, "myapp")  // fails if not a replica set
+d.Migrate(ctx)
+
+mqClient := mongodriver.NewClient(d, goncordia.ClientConfig{})
+
+// Transactional insert via mongo.SessionContext
+mongoClient.UseSession(ctx, func(sc mongo.SessionContext) error {
+    sc.StartTransaction()
+    db.Collection("orders").InsertOne(sc, order)
+    mqClient.EnqueueTx(sc, sc, SendConfirmationArgs{OrderID: order.ID}, nil)
+    return sc.CommitTransaction(sc)
+})
+```
+
+### gorm
+
+```go
+import (
+    gormdriver "github.com/goncordia/goncordia/driver/gorm"
+    "gorm.io/gorm"
+)
+
+d, _ := gormdriver.New(db)  // db is *gorm.DB
+d.Migrate(ctx)
+
+client := gormdriver.NewClient(d, goncordia.ClientConfig{})
+
+db.Transaction(func(tx *gorm.DB) error {
+    tx.Create(&order)
+    client.EnqueueTx(ctx, tx, SendConfirmationArgs{OrderID: order.ID}, nil)
+    return nil  // commit — job appears atomically with the order
+})
+```
+
+### bun
+
+```go
+import (
+    bundriver "github.com/goncordia/goncordia/driver/bun"
+    "github.com/uptrace/bun"
+)
+
+d := bundriver.New(db)  // db is *bun.DB
+d.Migrate(ctx)
+
+client := bundriver.NewClient(d, goncordia.ClientConfig{})
+
+tx, _ := db.BeginTx(ctx, nil)
+tx.NewInsert().Model(&order).Exec(ctx)
+client.EnqueueTx(ctx, tx, SendConfirmationArgs{OrderID: order.ID}, nil)
+tx.Commit()
+```
+
+### Redis
+
+```go
+import (
+    redisdriver "github.com/goncordia/goncordia/driver/redis"
+    "github.com/redis/go-redis/v9"
+)
+
+rdb := redis.NewClient(&redis.Options{Addr: "localhost:6379"})
+d := redisdriver.New(rdb)
+d.Migrate(ctx)  // pings Redis to verify connectivity
+
+client := redisdriver.NewClient(d, goncordia.ClientConfig{})
+client.Enqueue(ctx, MyJob{...}, nil)
+
+// EnqueueTx is not supported on the Redis driver:
+// there is no rollback guarantee. Use Enqueue (post-commit pattern) instead.
+```
+
+### SQLite (no Docker, good for tests)
 
 ```go
 import (
     _ "modernc.org/sqlite"
-    "database/sql"
-    "github.com/goncordia/goncordia/driver/stdlib"
+    stdlibdriver "github.com/goncordia/goncordia/driver/stdlib"
 )
 
 db, _ := sql.Open("sqlite", "./jobs.db")
 db.SetMaxOpenConns(1)  // SQLite: single writer
 
-d := stdlib.New(db, stdlib.SQLite)
-d.Migrate(ctx)
-
-client := stdlib.NewClient(d, goncordia.ClientConfig{})
-wp     := stdlib.NewWorkerPool(d, registry, goncordia.WorkerConfig{...})
-```
-
-### MySQL
-
-```go
-import (
-    _ "github.com/go-sql-driver/mysql"
-    "database/sql"
-    "github.com/goncordia/goncordia/driver/stdlib"
-)
-
-db, _ := sql.Open("mysql", dsn+"?parseTime=true")
-d := stdlib.New(db, stdlib.MySQL)
+d := stdlibdriver.New(db, stdlibdriver.SQLite)
 d.Migrate(ctx)
 ```
 
@@ -155,12 +223,11 @@ d.Migrate(ctx)
 ```
 available ──► running ──► completed
                 │
-                ├──► retryable ──► available (scheduled retry)
-                │
-                └──► discarded  (max retries exhausted)
+                ├──► retryable ──► available  (scheduled retry)
+                └──► discarded               (max retries exhausted)
 
-available ──► cancelled  (via client.Cancel)
-scheduled ──► available  (when run_at is reached)
+available ──► cancelled   (via JobCancel)
+scheduled ──► available   (when run_at is reached)
 ```
 
 ---
@@ -169,18 +236,17 @@ scheduled ──► available  (when run_at is reached)
 
 ```go
 client.Enqueue(ctx, MyJobArgs{...}, &core.InsertOpts{
-    Queue:    "critical",          // override default queue
-    Priority: 10,                  // higher = earlier
-    RunAt:    time.Now().Add(time.Hour),  // schedule for later
+    Queue:    "critical",                    // override default queue
+    Priority: 10,                            // higher = processed first
+    RunAt:    time.Now().Add(time.Hour),     // schedule for later
 
-    // Deduplication: skip if identical job already active
-    UniqueOpts: &core.UniqueOpts{
+    UniqueOpts: &core.UniqueOpts{            // deduplicate
         ByArgs:  true,
         ByQueue: true,
     },
 
-    MaxRetry: intPtr(3),           // override worker default
-    Tags:     []string{"user:42"}, // for observability
+    MaxRetry: intPtr(3),
+    Tags:     []string{"user:42"},
 })
 ```
 
@@ -192,10 +258,10 @@ client.Enqueue(ctx, MyJobArgs{...}, &core.InsertOpts{
 goncordia.WorkerConfig{
     Queues:          []string{"default", "critical"},
     Concurrency:     20,
-    PollInterval:    500 * time.Millisecond,  // only when no LISTEN/NOTIFY
+    PollInterval:    500 * time.Millisecond,  // fallback when no push notifications
     RetryPolicy:     core.ExponentialRetry{Base: time.Second, Max: time.Hour},
     ShutdownTimeout: 30 * time.Second,
-    Clock:           clock.NewMock(time.Now()),  // for tests
+    Clock:           clk,  // inject MockClock in tests
 }
 ```
 
@@ -204,13 +270,13 @@ goncordia.WorkerConfig{
 ## Retry policies
 
 ```go
-// Exponential backoff: 1s, 2s, 4s, 8s… capped at Max (default)
+// Exponential backoff (default): 1s, 2s, 4s, … capped at Max
 core.ExponentialRetry{Base: time.Second, Max: 24 * time.Hour}
 
 // Fixed delay
 core.FixedRetry{Delay: 30 * time.Second}
 
-// No retry — discard immediately on first failure
+// No retry — discard immediately
 core.NoRetry{}
 
 // Custom
@@ -224,7 +290,7 @@ func (MyPolicy) NextRetryAt(attempt int, err error, clk clock.Clock) time.Time {
 
 ## Testing
 
-Use the in-memory driver — no database, no Docker:
+Use the in-memory driver — no database, no Docker, deterministic time:
 
 ```go
 import (
@@ -235,19 +301,20 @@ import (
 clk := clock.NewMock(time.Now())
 d   := memory.New(memory.WithClock(clk))
 
-client := goncordia.NewClient(d, goncordia.ClientConfig{})
-wp     := goncordia.NewWorkerPool(d, registry, goncordia.WorkerConfig{Clock: clk})
+client := goncordia.NewClient[memory.NoTx](d, goncordia.ClientConfig{})
+wp     := goncordia.NewWorkerPool[memory.NoTx](d, registry, goncordia.WorkerConfig{Clock: clk})
 
-// Advance mock time instead of sleeping
-clk.Advance(time.Hour)
+go wp.Start(ctx)
+clk.Advance(time.Hour)  // trigger scheduled jobs instantly
 
-// Inspect internal state
-jobs := d.AllJobs()
+jobs := d.AllJobs()  // inspect state without a real database
 ```
 
 ---
 
 ## Implementing a custom driver
+
+Implement `driver.Driver[TTx]` where `TTx` is your transaction type:
 
 ```go
 type MyDriver struct{}
@@ -256,11 +323,11 @@ func (d *MyDriver) Name() string                        { return "mydb" }
 func (d *MyDriver) Capabilities() driver.Capabilities  { return driver.Capabilities{NativeTx: true} }
 func (d *MyDriver) Executor() driver.Executor          { return &myExecutor{} }
 func (d *MyDriver) UnwrapTx(tx MyTx) driver.ExecutorTx { return &myTxExecutor{tx: tx} }
-func (d *MyDriver) Listener() driver.Listener          { return nil } // polling fallback
+func (d *MyDriver) Listener() driver.Listener          { return nil } // nil = polling fallback
 func (d *MyDriver) Close() error                       { return nil }
 ```
 
-The `driver.Executor` interface requires ~14 methods covering job CRUD, queue management, and leader election. See `driver/driver.go` for the full interface.
+`driver.Executor` has 14 methods covering job CRUD, queue management, and leader election. See [`driver/driver.go`](driver/driver.go) for the full interface and [`driver/memory/memory.go`](driver/memory/memory.go) for a minimal reference implementation.
 
 ---
 
@@ -276,11 +343,27 @@ goncordia/
 │   └── retry.go           # RetryPolicy, ExponentialRetry, FixedRetry, NoRetry
 ├── driver/
 │   ├── driver.go          # Driver[TTx], Executor, ExecutorTx, Listener interfaces
-│   ├── memory/            # in-memory driver (tests)
-│   ├── pgxv5/             # PostgreSQL via pgx/v5 (LISTEN/NOTIFY, advisory locks)
-│   └── stdlib/            # PostgreSQL + MySQL + SQLite via database/sql
+│   ├── memory/            # in-memory (no persistence; for tests)
+│   ├── pgxv5/             # PostgreSQL via pgx v5 (LISTEN/NOTIFY, advisory locks)
+│   ├── stdlib/            # PostgreSQL + MySQL + SQLite via database/sql
+│   ├── gorm/              # gorm adapter (wraps stdlib)
+│   ├── bun/               # bun adapter (wraps stdlib)
+│   ├── mongodb/           # MongoDB 4.0+ replica set
+│   └── redis/             # Redis (at-least-once; Pub/Sub notifications)
 └── internal/clock/        # Clock interface + MockClock
 ```
+
+---
+
+## Transaction guarantees by backend
+
+| Backend | Guarantee | Mechanism |
+|---|---|---|
+| Postgres / MySQL / SQLite | Atomic with business tx | Same DB connection, same `BEGIN`/`COMMIT` |
+| gorm / bun | Atomic with business tx | Extracts underlying `*sql.Tx` |
+| MongoDB | Atomic with business tx | Multi-document transaction on replica set |
+| Redis | **None** — at-least-once | Pub/Sub + idempotent workers |
+| In-memory | Atomic (in-process) | Single mutex |
 
 ---
 
