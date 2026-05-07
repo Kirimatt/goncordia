@@ -23,6 +23,7 @@ tx.Commit(ctx)  // job and order appear atomically
 - **Queue pause/resume** — drain a queue without stopping workers
 - **Push notifications** — LISTEN/NOTIFY (Postgres), Change Streams (MongoDB), Pub/Sub (Redis); polling fallback elsewhere
 - **SKIP LOCKED** — lock-free concurrent fetching on Postgres and MySQL
+- **Periodic / cron jobs** — `CronScheduler` with `Every(d)` or custom `ScheduleFunc`
 - **MockClock** — deterministic time control for tests; no `time.Sleep`
 
 ---
@@ -267,6 +268,54 @@ goncordia.WorkerConfig{
 
 ---
 
+## Periodic / cron jobs
+
+`CronScheduler` enqueues jobs on a schedule. Pair it with a `WorkerPool` that processes them.
+
+```go
+import "github.com/goncordia/goncordia/core"
+
+cs := goncordia.NewCronScheduler(d, []goncordia.PeriodicJob{
+    {
+        Schedule: core.Every(time.Hour),
+        Args:     CleanupArgs{},
+    },
+    {
+        Schedule: core.Every(24 * time.Hour),
+        Args:     ReportArgs{},
+        Opts:     &core.InsertOpts{Queue: "low-priority"},
+    },
+}, goncordia.CronConfig{
+    TickInterval: time.Second, // how often to check for due jobs
+})
+
+go cs.Start(ctx)   // blocks; cancel ctx to stop
+go wp.Start(ctx)   // worker pool processes the enqueued jobs
+```
+
+### Custom schedule
+
+```go
+// core.ScheduleFunc adapts any function to the Schedule interface.
+sched := core.ScheduleFunc(func(last time.Time) time.Time {
+    if last.IsZero() {
+        return time.Time{} // run immediately on first tick
+    }
+    // Business-hours only: next run at 09:00 the following day
+    next := last.Add(24 * time.Hour)
+    next = time.Date(next.Year(), next.Month(), next.Day(), 9, 0, 0, 0, next.Location())
+    return next
+})
+```
+
+### Notes
+
+- The scheduler fires each job on the **first tick** after `Start`, then respects the interval.
+- `CronScheduler` only *enqueues* — workers run via `WorkerPool`.
+- Add `UniqueOpts` to `PeriodicJob.Opts` to prevent duplicate jobs if multiple scheduler instances run.
+
+---
+
 ## Retry policies
 
 ```go
@@ -410,10 +459,12 @@ goncordia.WorkerConfig{
 goncordia/
 ├── client.go              # Client[TTx] — Enqueue, EnqueueTx, Cancel
 ├── worker.go              # WorkerPool[TTx] — Start, Stop, JobMiddleware
+├── cron.go                # CronScheduler[TTx] — periodic/cron job scheduling
 ├── core/
 │   ├── job.go             # JobArgs, Worker, InsertOpts, WorkerOpts
 │   ├── registry.go        # type-erased worker dispatch
-│   └── retry.go           # RetryPolicy, ExponentialRetry, FixedRetry, NoRetry
+│   ├── retry.go           # RetryPolicy, ExponentialRetry, FixedRetry, NoRetry
+│   └── schedule.go        # Schedule interface, Every, ScheduleFunc
 ├── driver/
 │   ├── driver.go          # Driver[TTx], Executor, ExecutorTx, Listener interfaces
 │   ├── memory/            # in-memory (no persistence; for tests)
