@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [v0.6.0] — 2026-05-07
+
+### Added
+- `CHANGELOG.md` following [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format
+- Link to CHANGELOG from README
+
+---
+
 ## [v0.5.0] — 2026-05-07
 
 ### Added
@@ -74,6 +82,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Clock` interface + `MockClock` for deterministic time control in tests
 - MIT License
 
+[v0.6.0]: https://github.com/kirimatt/goncordia/releases/tag/v0.6.0
 [v0.5.0]: https://github.com/kirimatt/goncordia/releases/tag/v0.5.0
 [v0.4.0]: https://github.com/kirimatt/goncordia/releases/tag/v0.4.0
 [v0.3.0]: https://github.com/kirimatt/goncordia/releases/tag/v0.3.0
