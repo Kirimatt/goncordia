@@ -487,6 +487,7 @@ Apple M5, single process. Memory/SQLite are in-process (no network); Postgres/Mo
 | Redis | 109 µs | ZADD over localhost |
 | Postgres (pgx v5) | 129 µs | INSERT over localhost |
 | MongoDB | 338 µs | insertOne over localhost |
+| DynamoDB | 632 µs | PutItem over localhost |
 | ClickHouse | 1 378 µs | INSERT + new data part over localhost |
 | Cassandra | 7 216 µs | LWT requires Paxos quorum (3 round trips) |
 
@@ -499,6 +500,7 @@ Apple M5, single process. Memory/SQLite are in-process (no network); Postgres/Mo
 | Redis | 10.9 ms | ~9 200 |
 | Postgres (pgx v5) | 12.8 ms | ~7 800 |
 | MongoDB | 34.9 ms | ~2 900 |
+| DynamoDB | 62.9 ms | ~1 590 |
 | ClickHouse | 150 ms | ~665 |
 | Cassandra | 708 ms | ~141 |
 
@@ -509,6 +511,7 @@ Apple M5, single process. Memory/SQLite are in-process (no network); Postgres/Mo
 | SQLite | 53 µs | indexed; faster than memory at scale |
 | Memory | 520 µs | O(N) linear scan |
 | Redis | 729 µs | Lua ZPOPMIN + HSET |
+| DynamoDB | 1 731 µs | Query GSI + conditional UpdateItem |
 | MongoDB | 2 475 µs | findAndModify + updateOne |
 | Postgres (pgx v5) | 12 190 µs | SELECT SKIP LOCKED + UPDATE |
 | ClickHouse | 14 416 µs | SELECT FINAL + INSERT new version |
@@ -521,6 +524,7 @@ Apple M5, single process. Memory/SQLite are in-process (no network); Postgres/Mo
 | Memory | c=10 | ~2 020 | |
 | Redis | c=4 | ~1 084 | Pub/Sub notifications |
 | SQLite | c=4 | ~800 | |
+| DynamoDB | c=4 | ~780 | polling; GSI query overhead |
 | MongoDB | c=4 | ~452 | Change Streams |
 | Postgres (pgx v5) | c=4 | ~179 | LISTEN/NOTIFY |
 | Cassandra | c=4 | ~153 | polling; LWT overhead |
@@ -528,7 +532,7 @@ Apple M5, single process. Memory/SQLite are in-process (no network); Postgres/Mo
 
 End-to-end throughput is bounded by the 5 ms poll interval used in the benchmark. In production the pgxv5 driver uses LISTEN/NOTIFY and the Redis driver uses Pub/Sub, eliminating poll latency entirely — real throughput matches the FetchAndComplete numbers above.
 
-Cassandra's high per-operation latency comes from Lightweight Transaction consensus (Paxos, ~3 network round trips per claim). ClickHouse's overhead comes from `SELECT … FINAL` deduplication at query time; both backends are best suited for workloads where high throughput matters more than low per-job latency.
+Cassandra's high per-operation latency comes from Lightweight Transaction consensus (Paxos, ~3 network round trips per claim). ClickHouse's overhead comes from `SELECT … FINAL` deduplication at query time. DynamoDB's per-operation cost is dominated by HTTP/JSON round trips to the service — measured against DynamoDB Local on localhost, so real AWS numbers include additional network latency. All three backends are best suited for workloads where horizontal scale matters more than raw per-job latency.
 
 ---
 
