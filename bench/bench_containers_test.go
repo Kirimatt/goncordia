@@ -8,10 +8,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ClickHouse/clickhouse-go/v2"
+	"github.com/gocql/gocql"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	goredis "github.com/redis/go-redis/v9"
 	"github.com/testcontainers/testcontainers-go"
+	tccassandra "github.com/testcontainers/testcontainers-go/modules/cassandra"
+	tcclickhouse "github.com/testcontainers/testcontainers-go/modules/clickhouse"
 	tcmongo "github.com/testcontainers/testcontainers-go/modules/mongodb"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 	tcredis "github.com/testcontainers/testcontainers-go/modules/redis"
@@ -20,15 +24,19 @@ import (
 	mongoopts "go.mongodb.org/mongo-driver/mongo/options"
 
 	"github.com/kirimatt/goncordia/driver"
+	cassandradriver "github.com/kirimatt/goncordia/driver/cassandra"
+	clickhousedriver "github.com/kirimatt/goncordia/driver/clickhouse"
 	mongodriver "github.com/kirimatt/goncordia/driver/mongodb"
 	pgxv5driver "github.com/kirimatt/goncordia/driver/pgxv5"
 	redisdriver "github.com/kirimatt/goncordia/driver/redis"
 )
 
 var (
-	benchPgxDriver   driver.Driver[pgx.Tx]
-	benchMongoDriver driver.Driver[mongo.SessionContext]
-	benchRedisDriver driver.Driver[redisdriver.NoTx]
+	benchPgxDriver        driver.Driver[pgx.Tx]
+	benchMongoDriver      driver.Driver[mongo.SessionContext]
+	benchRedisDriver      driver.Driver[redisdriver.NoTx]
+	benchCassandraDriver  driver.Driver[cassandradriver.NoTx]
+	benchClickHouseDriver driver.Driver[clickhousedriver.NoTx]
 )
 
 func TestMain(m *testing.M) {
@@ -45,6 +53,14 @@ func TestMain(m *testing.M) {
 	}
 	if d, cleanup := startRedis(ctx); d != nil {
 		benchRedisDriver = d
+		cleanups = append(cleanups, cleanup)
+	}
+	if d, cleanup := startCassandra(ctx); d != nil {
+		benchCassandraDriver = d
+		cleanups = append(cleanups, cleanup)
+	}
+	if d, cleanup := startClickHouse(ctx); d != nil {
+		benchClickHouseDriver = d
 		cleanups = append(cleanups, cleanup)
 	}
 
@@ -155,6 +171,88 @@ func startRedis(ctx context.Context) (driver.Driver[redisdriver.NoTx], func()) {
 	}
 }
 
+func startCassandra(ctx context.Context) (driver.Driver[cassandradriver.NoTx], func()) {
+	ctr, err := tccassandra.Run(ctx, "cassandra:4.1")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "bench: skip cassandra benchmarks: %v\n", err)
+		return nil, nil
+	}
+	host, err := ctr.ConnectionHost(ctx)
+	if err != nil {
+		ctr.Terminate(ctx) //nolint:errcheck
+		return nil, nil
+	}
+	cluster := gocql.NewCluster(host)
+	cluster.Timeout = 15 * time.Second
+	cluster.ConnectTimeout = 15 * time.Second
+	cluster.Consistency = gocql.Quorum
+
+	sysSession, err := cluster.CreateSession()
+	if err != nil {
+		ctr.Terminate(ctx) //nolint:errcheck
+		return nil, nil
+	}
+	if err := sysSession.Query(
+		`CREATE KEYSPACE IF NOT EXISTS goncordia_bench
+		 WITH replication = {'class': 'SimpleStrategy', 'replication_factor': 1}`,
+	).Exec(); err != nil {
+		sysSession.Close()
+		ctr.Terminate(ctx) //nolint:errcheck
+		return nil, nil
+	}
+	sysSession.Close()
+
+	cluster.Keyspace = "goncordia_bench"
+	session, err := cluster.CreateSession()
+	if err != nil {
+		ctr.Terminate(ctx) //nolint:errcheck
+		return nil, nil
+	}
+	d := cassandradriver.New(session)
+	if err := d.Migrate(ctx); err != nil {
+		session.Close()
+		ctr.Terminate(ctx) //nolint:errcheck
+		return nil, nil
+	}
+	return d, func() {
+		session.Close()
+		ctr.Terminate(ctx) //nolint:errcheck
+	}
+}
+
+func startClickHouse(ctx context.Context) (driver.Driver[clickhousedriver.NoTx], func()) {
+	ctr, err := tcclickhouse.Run(ctx, "clickhouse/clickhouse-server:24.3-alpine")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "bench: skip clickhouse benchmarks: %v\n", err)
+		return nil, nil
+	}
+	dsn, err := ctr.ConnectionString(ctx)
+	if err != nil {
+		ctr.Terminate(ctx) //nolint:errcheck
+		return nil, nil
+	}
+	opts, err := clickhouse.ParseDSN(dsn)
+	if err != nil {
+		ctr.Terminate(ctx) //nolint:errcheck
+		return nil, nil
+	}
+	conn, err := clickhouse.Open(opts)
+	if err != nil {
+		ctr.Terminate(ctx) //nolint:errcheck
+		return nil, nil
+	}
+	d := clickhousedriver.New(conn)
+	if err := d.Migrate(ctx); err != nil {
+		conn.Close()
+		ctr.Terminate(ctx) //nolint:errcheck
+		return nil, nil
+	}
+	return d, func() {
+		conn.Close()
+		ctr.Terminate(ctx) //nolint:errcheck
+	}
+}
+
 // ---- Enqueue ----
 
 func BenchmarkEnqueue_Postgres(b *testing.B) {
@@ -176,6 +274,20 @@ func BenchmarkEnqueue_Redis(b *testing.B) {
 		b.Skip("redis not available")
 	}
 	benchmarkEnqueue(b, benchRedisDriver)
+}
+
+func BenchmarkEnqueue_Cassandra(b *testing.B) {
+	if benchCassandraDriver == nil {
+		b.Skip("cassandra not available")
+	}
+	benchmarkEnqueue(b, benchCassandraDriver)
+}
+
+func BenchmarkEnqueue_ClickHouse(b *testing.B) {
+	if benchClickHouseDriver == nil {
+		b.Skip("clickhouse not available")
+	}
+	benchmarkEnqueue(b, benchClickHouseDriver)
 }
 
 // ---- EnqueueBatch(100) ----
@@ -201,6 +313,20 @@ func BenchmarkEnqueueBatch100_Redis(b *testing.B) {
 	benchmarkEnqueueBatch(b, benchRedisDriver, 100)
 }
 
+func BenchmarkEnqueueBatch100_Cassandra(b *testing.B) {
+	if benchCassandraDriver == nil {
+		b.Skip("cassandra not available")
+	}
+	benchmarkEnqueueBatch(b, benchCassandraDriver, 100)
+}
+
+func BenchmarkEnqueueBatch100_ClickHouse(b *testing.B) {
+	if benchClickHouseDriver == nil {
+		b.Skip("clickhouse not available")
+	}
+	benchmarkEnqueueBatch(b, benchClickHouseDriver, 100)
+}
+
 // ---- FetchAndComplete ----
 
 func BenchmarkFetchAndComplete_Postgres(b *testing.B) {
@@ -224,6 +350,20 @@ func BenchmarkFetchAndComplete_Redis(b *testing.B) {
 	benchmarkFetchAndComplete(b, benchRedisDriver)
 }
 
+func BenchmarkFetchAndComplete_Cassandra(b *testing.B) {
+	if benchCassandraDriver == nil {
+		b.Skip("cassandra not available")
+	}
+	benchmarkFetchAndComplete(b, benchCassandraDriver)
+}
+
+func BenchmarkFetchAndComplete_ClickHouse(b *testing.B) {
+	if benchClickHouseDriver == nil {
+		b.Skip("clickhouse not available")
+	}
+	benchmarkFetchAndComplete(b, benchClickHouseDriver)
+}
+
 // ---- End-to-end ----
 
 func BenchmarkEndToEnd_Postgres_c4(b *testing.B) {
@@ -245,4 +385,18 @@ func BenchmarkEndToEnd_Redis_c4(b *testing.B) {
 		b.Skip("redis not available")
 	}
 	benchmarkEndToEnd(b, benchRedisDriver, 4)
+}
+
+func BenchmarkEndToEnd_Cassandra_c4(b *testing.B) {
+	if benchCassandraDriver == nil {
+		b.Skip("cassandra not available")
+	}
+	benchmarkEndToEnd(b, benchCassandraDriver, 4)
+}
+
+func BenchmarkEndToEnd_ClickHouse_c4(b *testing.B) {
+	if benchClickHouseDriver == nil {
+		b.Skip("clickhouse not available")
+	}
+	benchmarkEndToEnd(b, benchClickHouseDriver, 4)
 }
