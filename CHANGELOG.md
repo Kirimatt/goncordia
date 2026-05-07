@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [v0.7.2] — 2026-05-07
+
+### Changed
+- Cleaned git history (removed Co-Authored-By from commit messages)
+
+---
+
 ## [v0.7.1] — 2026-05-07
 
 ### Changed
@@ -107,6 +114,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Clock` interface + `MockClock` for deterministic time control in tests
 - MIT License
 
+[v0.7.2]: https://github.com/kirimatt/goncordia/releases/tag/v0.7.2
 [v0.7.1]: https://github.com/kirimatt/goncordia/releases/tag/v0.7.1
 [v0.7.0]: https://github.com/kirimatt/goncordia/releases/tag/v0.7.0
 [v0.6.0]: https://github.com/kirimatt/goncordia/releases/tag/v0.6.0
