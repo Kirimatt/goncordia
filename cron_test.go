@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/goncordia/goncordia"
-	"github.com/goncordia/goncordia/core"
-	"github.com/goncordia/goncordia/driver/memory"
+	"github.com/kirimatt/goncordia"
+	"github.com/kirimatt/goncordia/core"
+	"github.com/kirimatt/goncordia/driver/memory"
 )
 
 type cronJob struct{ N int }

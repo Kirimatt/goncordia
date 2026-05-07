@@ -13,10 +13,10 @@ import (
 	"github.com/testcontainers/testcontainers-go/wait"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 
-	"github.com/goncordia/goncordia"
-	"github.com/goncordia/goncordia/core"
-	pgxdriver "github.com/goncordia/goncordia/driver/pgxv5"
-	"github.com/goncordia/goncordia/internal/clock"
+	"github.com/kirimatt/goncordia"
+	"github.com/kirimatt/goncordia/core"
+	pgxdriver "github.com/kirimatt/goncordia/driver/pgxv5"
+	"github.com/kirimatt/goncordia/internal/clock"
 )
 
 // skipIfNoDocker skips the test if Docker is not available.

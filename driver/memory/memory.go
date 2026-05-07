@@ -10,8 +10,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/goncordia/goncordia/driver"
-	"github.com/goncordia/goncordia/internal/clock"
+	"github.com/kirimatt/goncordia/driver"
+	"github.com/kirimatt/goncordia/internal/clock"
 )
 
 // NoTx is the transaction type for the memory driver.

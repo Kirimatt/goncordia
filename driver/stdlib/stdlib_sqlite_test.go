@@ -10,10 +10,10 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"github.com/goncordia/goncordia"
-	"github.com/goncordia/goncordia/core"
-	stdlibdriver "github.com/goncordia/goncordia/driver/stdlib"
-	"github.com/goncordia/goncordia/internal/clock"
+	"github.com/kirimatt/goncordia"
+	"github.com/kirimatt/goncordia/core"
+	stdlibdriver "github.com/kirimatt/goncordia/driver/stdlib"
+	"github.com/kirimatt/goncordia/internal/clock"
 )
 
 func newSQLiteDriver(t *testing.T, opts ...stdlibdriver.Option) (*stdlibdriver.Driver, *sql.DB) {

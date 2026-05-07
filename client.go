@@ -20,8 +20,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/goncordia/goncordia/core"
-	"github.com/goncordia/goncordia/driver"
+	"github.com/kirimatt/goncordia/core"
+	"github.com/kirimatt/goncordia/driver"
 )
 
 // Client enqueues jobs into the job queue.

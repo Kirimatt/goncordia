@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/goncordia/goncordia/internal/clock"
+	"github.com/kirimatt/goncordia/internal/clock"
 )
 
 func TestMockClock(t *testing.T) {

@@ -10,10 +10,10 @@ import (
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 
-	"github.com/goncordia/goncordia"
-	"github.com/goncordia/goncordia/core"
-	stdlibdriver "github.com/goncordia/goncordia/driver/stdlib"
-	"github.com/goncordia/goncordia/internal/clock"
+	"github.com/kirimatt/goncordia"
+	"github.com/kirimatt/goncordia/core"
+	stdlibdriver "github.com/kirimatt/goncordia/driver/stdlib"
+	"github.com/kirimatt/goncordia/internal/clock"
 )
 
 func newPostgresDriver(t *testing.T, opts ...stdlibdriver.Option) *stdlibdriver.Driver {

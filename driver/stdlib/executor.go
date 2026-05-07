@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/goncordia/goncordia/driver"
-	"github.com/goncordia/goncordia/internal/clock"
+	"github.com/kirimatt/goncordia/driver"
+	"github.com/kirimatt/goncordia/internal/clock"
 )
 
 // executor is the non-transactional executor (uses *sql.DB).

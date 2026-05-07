@@ -12,10 +12,10 @@ import (
 	"github.com/redis/go-redis/v9"
 	tcredis "github.com/testcontainers/testcontainers-go/modules/redis"
 
-	"github.com/goncordia/goncordia"
-	"github.com/goncordia/goncordia/core"
-	redisdriver "github.com/goncordia/goncordia/driver/redis"
-	"github.com/goncordia/goncordia/internal/clock"
+	"github.com/kirimatt/goncordia"
+	"github.com/kirimatt/goncordia/core"
+	redisdriver "github.com/kirimatt/goncordia/driver/redis"
+	"github.com/kirimatt/goncordia/internal/clock"
 )
 
 var redisAddr string

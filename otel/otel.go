@@ -2,7 +2,7 @@
 //
 // Add the middleware to WorkerConfig to get a span and metrics for every job:
 //
-//	import otelgoncordia "github.com/goncordia/goncordia/otel"
+//	import otelgoncordia "github.com/kirimatt/goncordia/otel"
 //
 //	wp := pgxdriver.NewWorkerPool(d, registry, goncordia.WorkerConfig{
 //	    Queues:     []string{"default"},
@@ -25,12 +25,12 @@ import (
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 
-	goncordia "github.com/goncordia/goncordia"
-	"github.com/goncordia/goncordia/core"
+	goncordia "github.com/kirimatt/goncordia"
+	"github.com/kirimatt/goncordia/core"
 )
 
 const (
-	instrName    = "github.com/goncordia/goncordia"
+	instrName    = "github.com/kirimatt/goncordia"
 	spanName     = "goncordia.process"
 	attrKind     = "goncordia.job.kind"
 	attrQueue    = "goncordia.job.queue"

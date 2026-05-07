@@ -14,10 +14,10 @@ import (
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 
-	"github.com/goncordia/goncordia"
-	"github.com/goncordia/goncordia/core"
-	mongodriver "github.com/goncordia/goncordia/driver/mongodb"
-	"github.com/goncordia/goncordia/internal/clock"
+	"github.com/kirimatt/goncordia"
+	"github.com/kirimatt/goncordia/core"
+	mongodriver "github.com/kirimatt/goncordia/driver/mongodb"
+	"github.com/kirimatt/goncordia/internal/clock"
 )
 
 var mongoURI string

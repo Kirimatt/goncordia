@@ -21,10 +21,10 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	goncordia "github.com/goncordia/goncordia"
-	"github.com/goncordia/goncordia/core"
-	"github.com/goncordia/goncordia/driver"
-	"github.com/goncordia/goncordia/internal/clock"
+	goncordia "github.com/kirimatt/goncordia"
+	"github.com/kirimatt/goncordia/core"
+	"github.com/kirimatt/goncordia/driver"
+	"github.com/kirimatt/goncordia/internal/clock"
 )
 
 //go:embed migrations/*.sql

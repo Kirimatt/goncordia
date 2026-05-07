@@ -23,11 +23,11 @@ import (
 	"database/sql"
 	"fmt"
 
-	goncordia "github.com/goncordia/goncordia"
-	"github.com/goncordia/goncordia/core"
-	"github.com/goncordia/goncordia/driver"
-	stdlibdriver "github.com/goncordia/goncordia/driver/stdlib"
-	"github.com/goncordia/goncordia/internal/clock"
+	goncordia "github.com/kirimatt/goncordia"
+	"github.com/kirimatt/goncordia/core"
+	"github.com/kirimatt/goncordia/driver"
+	stdlibdriver "github.com/kirimatt/goncordia/driver/stdlib"
+	"github.com/kirimatt/goncordia/internal/clock"
 	gormpkg "gorm.io/gorm"
 )
 

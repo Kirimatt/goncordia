@@ -18,11 +18,11 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"github.com/goncordia/goncordia"
-	"github.com/goncordia/goncordia/core"
-	"github.com/goncordia/goncordia/driver"
-	"github.com/goncordia/goncordia/driver/memory"
-	stdlibdriver "github.com/goncordia/goncordia/driver/stdlib"
+	"github.com/kirimatt/goncordia"
+	"github.com/kirimatt/goncordia/core"
+	"github.com/kirimatt/goncordia/driver"
+	"github.com/kirimatt/goncordia/driver/memory"
+	stdlibdriver "github.com/kirimatt/goncordia/driver/stdlib"
 )
 
 type benchJob struct{ N int }

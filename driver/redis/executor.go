@@ -10,8 +10,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 
-	"github.com/goncordia/goncordia/driver"
-	"github.com/goncordia/goncordia/internal/clock"
+	"github.com/kirimatt/goncordia/driver"
+	"github.com/kirimatt/goncordia/internal/clock"
 )
 
 // ---- key schema ----

@@ -25,10 +25,10 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
-	goncordia "github.com/goncordia/goncordia"
-	"github.com/goncordia/goncordia/core"
-	"github.com/goncordia/goncordia/driver"
-	"github.com/goncordia/goncordia/internal/clock"
+	goncordia "github.com/kirimatt/goncordia"
+	"github.com/kirimatt/goncordia/core"
+	"github.com/kirimatt/goncordia/driver"
+	"github.com/kirimatt/goncordia/internal/clock"
 )
 
 // NoTx is the transaction type for the Redis driver.

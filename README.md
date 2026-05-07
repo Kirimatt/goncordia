@@ -45,29 +45,29 @@ tx.Commit(ctx)  // job and order appear atomically
 ## Installation
 
 ```bash
-go get github.com/goncordia/goncordia
+go get github.com/kirimatt/goncordia
 ```
 
 Pick a driver:
 
 ```bash
 # PostgreSQL via pgx v5
-go get github.com/goncordia/goncordia/driver/pgxv5 github.com/jackc/pgx/v5
+go get github.com/kirimatt/goncordia/driver/pgxv5 github.com/jackc/pgx/v5
 
 # PostgreSQL / MySQL / SQLite via database/sql
-go get github.com/goncordia/goncordia/driver/stdlib
+go get github.com/kirimatt/goncordia/driver/stdlib
 
 # gorm adapter
-go get github.com/goncordia/goncordia/driver/gorm gorm.io/gorm
+go get github.com/kirimatt/goncordia/driver/gorm gorm.io/gorm
 
 # bun adapter
-go get github.com/goncordia/goncordia/driver/bun github.com/uptrace/bun
+go get github.com/kirimatt/goncordia/driver/bun github.com/uptrace/bun
 
 # MongoDB (replica set required)
-go get github.com/goncordia/goncordia/driver/mongodb go.mongodb.org/mongo-driver/mongo
+go get github.com/kirimatt/goncordia/driver/mongodb go.mongodb.org/mongo-driver/mongo
 
 # Redis
-go get github.com/goncordia/goncordia/driver/redis github.com/redis/go-redis/v9
+go get github.com/kirimatt/goncordia/driver/redis github.com/redis/go-redis/v9
 ```
 
 ---
@@ -78,9 +78,9 @@ go get github.com/goncordia/goncordia/driver/redis github.com/redis/go-redis/v9
 
 ```go
 import (
-    "github.com/goncordia/goncordia"
-    "github.com/goncordia/goncordia/core"
-    pgxdriver "github.com/goncordia/goncordia/driver/pgxv5"
+    "github.com/kirimatt/goncordia"
+    "github.com/kirimatt/goncordia/core"
+    pgxdriver "github.com/kirimatt/goncordia/driver/pgxv5"
     "github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -124,7 +124,7 @@ tx.Commit(ctx)  // job and order are atomic
 
 ```go
 import (
-    mongodriver "github.com/goncordia/goncordia/driver/mongodb"
+    mongodriver "github.com/kirimatt/goncordia/driver/mongodb"
     "go.mongodb.org/mongo-driver/mongo"
     "go.mongodb.org/mongo-driver/mongo/options"
 )
@@ -148,7 +148,7 @@ mongoClient.UseSession(ctx, func(sc mongo.SessionContext) error {
 
 ```go
 import (
-    gormdriver "github.com/goncordia/goncordia/driver/gorm"
+    gormdriver "github.com/kirimatt/goncordia/driver/gorm"
     "gorm.io/gorm"
 )
 
@@ -168,7 +168,7 @@ db.Transaction(func(tx *gorm.DB) error {
 
 ```go
 import (
-    bundriver "github.com/goncordia/goncordia/driver/bun"
+    bundriver "github.com/kirimatt/goncordia/driver/bun"
     "github.com/uptrace/bun"
 )
 
@@ -187,7 +187,7 @@ tx.Commit()
 
 ```go
 import (
-    redisdriver "github.com/goncordia/goncordia/driver/redis"
+    redisdriver "github.com/kirimatt/goncordia/driver/redis"
     "github.com/redis/go-redis/v9"
 )
 
@@ -207,7 +207,7 @@ client.Enqueue(ctx, MyJob{...}, nil)
 ```go
 import (
     _ "modernc.org/sqlite"
-    stdlibdriver "github.com/goncordia/goncordia/driver/stdlib"
+    stdlibdriver "github.com/kirimatt/goncordia/driver/stdlib"
 )
 
 db, _ := sql.Open("sqlite", "./jobs.db")
@@ -273,7 +273,7 @@ goncordia.WorkerConfig{
 `CronScheduler` enqueues jobs on a schedule. Pair it with a `WorkerPool` that processes them.
 
 ```go
-import "github.com/goncordia/goncordia/core"
+import "github.com/kirimatt/goncordia/core"
 
 cs := goncordia.NewCronScheduler(d, []goncordia.PeriodicJob{
     {
@@ -343,8 +343,8 @@ Use the in-memory driver — no database, no Docker, deterministic time:
 
 ```go
 import (
-    "github.com/goncordia/goncordia/driver/memory"
-    "github.com/goncordia/goncordia/internal/clock"
+    "github.com/kirimatt/goncordia/driver/memory"
+    "github.com/kirimatt/goncordia/internal/clock"
 )
 
 clk := clock.NewMock(time.Now())
@@ -406,11 +406,11 @@ End-to-end numbers are bounded by the 5 ms poll interval in the benchmark, not b
 ## Observability (OpenTelemetry)
 
 ```bash
-go get github.com/goncordia/goncordia/otel
+go get github.com/kirimatt/goncordia/otel
 ```
 
 ```go
-import otelgoncordia "github.com/goncordia/goncordia/otel"
+import otelgoncordia "github.com/kirimatt/goncordia/otel"
 
 wp := pgxdriver.NewWorkerPool(d, registry, goncordia.WorkerConfig{
     Queues:      []string{"default"},

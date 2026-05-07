@@ -10,10 +10,10 @@ import (
 	"github.com/glebarez/sqlite"
 	gormpkg "gorm.io/gorm"
 
-	"github.com/goncordia/goncordia"
-	"github.com/goncordia/goncordia/core"
-	gormdriver "github.com/goncordia/goncordia/driver/gorm"
-	"github.com/goncordia/goncordia/internal/clock"
+	"github.com/kirimatt/goncordia"
+	"github.com/kirimatt/goncordia/core"
+	gormdriver "github.com/kirimatt/goncordia/driver/gorm"
+	"github.com/kirimatt/goncordia/internal/clock"
 )
 
 type EmailJob struct {

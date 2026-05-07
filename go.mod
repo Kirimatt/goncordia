@@ -1,4 +1,4 @@
-module github.com/goncordia/goncordia
+module github.com/kirimatt/goncordia
 
 go 1.26.2
 

@@ -10,10 +10,10 @@ import (
 	"go.opentelemetry.io/otel/metric/noop"
 	nooptrace "go.opentelemetry.io/otel/trace/noop"
 
-	"github.com/goncordia/goncordia"
-	"github.com/goncordia/goncordia/core"
-	"github.com/goncordia/goncordia/driver/memory"
-	otelgoncordia "github.com/goncordia/goncordia/otel"
+	"github.com/kirimatt/goncordia"
+	"github.com/kirimatt/goncordia/core"
+	"github.com/kirimatt/goncordia/driver/memory"
+	otelgoncordia "github.com/kirimatt/goncordia/otel"
 )
 
 type emailJob struct{ To string }

@@ -12,10 +12,10 @@ import (
 	"github.com/uptrace/bun/dialect/sqlitedialect"
 	_ "modernc.org/sqlite"
 
-	"github.com/goncordia/goncordia"
-	"github.com/goncordia/goncordia/core"
-	bundriver "github.com/goncordia/goncordia/driver/bun"
-	"github.com/goncordia/goncordia/internal/clock"
+	"github.com/kirimatt/goncordia"
+	"github.com/kirimatt/goncordia/core"
+	bundriver "github.com/kirimatt/goncordia/driver/bun"
+	"github.com/kirimatt/goncordia/internal/clock"
 )
 
 type EmailJob struct {

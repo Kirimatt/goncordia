@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/goncordia/goncordia"
-	"github.com/goncordia/goncordia/core"
-	memdriver "github.com/goncordia/goncordia/driver/memory"
+	"github.com/kirimatt/goncordia"
+	"github.com/kirimatt/goncordia/core"
+	memdriver "github.com/kirimatt/goncordia/driver/memory"
 )
 
 // --- test job types ---
