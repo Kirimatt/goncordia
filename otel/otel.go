@@ -30,15 +30,15 @@ import (
 )
 
 const (
-	instrName    = "github.com/kirimatt/goncordia"
-	spanName     = "goncordia.process"
-	attrKind     = "goncordia.job.kind"
-	attrQueue    = "goncordia.job.queue"
-	attrID       = "goncordia.job.id"
-	attrAttempt  = "goncordia.job.attempt"
-	attrStatus   = "status"
-	statusOK     = "ok"
-	statusError  = "error"
+	instrName   = "github.com/kirimatt/goncordia"
+	spanName    = "goncordia.process"
+	attrKind    = "goncordia.job.kind"
+	attrQueue   = "goncordia.job.queue"
+	attrID      = "goncordia.job.id"
+	attrAttempt = "goncordia.job.attempt"
+	attrStatus  = "status"
+	statusOK    = "ok"
+	statusError = "error"
 )
 
 // Option configures the OTel middleware.

@@ -62,10 +62,10 @@ func (d *Driver) Capabilities() driver.Capabilities {
 	}
 }
 
-func (d *Driver) Executor() driver.Executor     { return &executor{d: d} }
+func (d *Driver) Executor() driver.Executor         { return &executor{d: d} }
 func (d *Driver) UnwrapTx(_ NoTx) driver.ExecutorTx { return &txExecutor{executor: executor{d: d}} }
-func (d *Driver) Listener() driver.Listener     { return &listener{d: d} }
-func (d *Driver) Close() error                  { return nil }
+func (d *Driver) Listener() driver.Listener         { return &listener{d: d} }
+func (d *Driver) Close() error                      { return nil }
 
 // --- executor ---
 

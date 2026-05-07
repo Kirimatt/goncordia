@@ -21,14 +21,14 @@ const (
 	queuesSetKey = "goncordia:queues"
 )
 
-func availKey(q string) string       { return "goncordia:q:" + q + ":avail" }
-func schedKey(q string) string       { return "goncordia:q:" + q + ":sched" }
-func runKey(q string) string         { return "goncordia:q:" + q + ":run" }
-func metaKey(q string) string        { return "goncordia:q:" + q + ":meta" }
-func jobKey(id string) string        { return jobKeyPrefix + id }
-func uniqKey(q, k string) string     { return "goncordia:uniq:" + q + ":" + k }
-func leaderKey(n string) string      { return "goncordia:leader:" + n }
-func notifyChannel(q string) string  { return "goncordia:notify:" + q }
+func availKey(q string) string      { return "goncordia:q:" + q + ":avail" }
+func schedKey(q string) string      { return "goncordia:q:" + q + ":sched" }
+func runKey(q string) string        { return "goncordia:q:" + q + ":run" }
+func metaKey(q string) string       { return "goncordia:q:" + q + ":meta" }
+func jobKey(id string) string       { return jobKeyPrefix + id }
+func uniqKey(q, k string) string    { return "goncordia:uniq:" + q + ":" + k }
+func leaderKey(n string) string     { return "goncordia:leader:" + n }
+func notifyChannel(q string) string { return "goncordia:notify:" + q }
 
 // priorityScore encodes priority and run_at into a sorted-set score.
 // ZPOPMIN picks lowest score, so higher priority → lower score → claimed first.
@@ -39,22 +39,22 @@ func priorityScore(priority int, runAt time.Time) float64 {
 // ---- job document ----
 
 type redisJob struct {
-	ID            string           `json:"id"`
-	Queue         string           `json:"queue"`
-	Kind          string           `json:"kind"`
-	Args          string           `json:"args"` // raw JSON string
-	State         string           `json:"state"`
-	Priority      int              `json:"priority"`
-	RunAtMs       int64            `json:"run_at_ms"`
-	CreatedAtMs   int64            `json:"created_at_ms"`
-	AttemptedAtMs int64            `json:"attempted_at_ms,omitempty"`
-	FinalizedAtMs int64            `json:"finalized_at_ms,omitempty"`
-	AttemptNum    int              `json:"attempt_num"`
-	MaxRetry      int              `json:"max_retry"`
-	TimeoutMs     int64            `json:"timeout_ms"`
-	UniqueKey     string           `json:"unique_key,omitempty"`
-	WorkerID      string           `json:"worker_id,omitempty"`
-	Tags          []string         `json:"tags"`
+	ID            string            `json:"id"`
+	Queue         string            `json:"queue"`
+	Kind          string            `json:"kind"`
+	Args          string            `json:"args"` // raw JSON string
+	State         string            `json:"state"`
+	Priority      int               `json:"priority"`
+	RunAtMs       int64             `json:"run_at_ms"`
+	CreatedAtMs   int64             `json:"created_at_ms"`
+	AttemptedAtMs int64             `json:"attempted_at_ms,omitempty"`
+	FinalizedAtMs int64             `json:"finalized_at_ms,omitempty"`
+	AttemptNum    int               `json:"attempt_num"`
+	MaxRetry      int               `json:"max_retry"`
+	TimeoutMs     int64             `json:"timeout_ms"`
+	UniqueKey     string            `json:"unique_key,omitempty"`
+	WorkerID      string            `json:"worker_id,omitempty"`
+	Tags          []string          `json:"tags"`
 	Errors        []redisAttemptErr `json:"errors"`
 }
 

@@ -110,8 +110,8 @@ type JobInsertParams struct {
 
 // JobInsertResult is returned after a successful insert.
 type JobInsertResult struct {
-	Job         *JobRow
-	UniqueSkip  bool // true if a duplicate was found and this insert was skipped
+	Job        *JobRow
+	UniqueSkip bool // true if a duplicate was found and this insert was skipped
 }
 
 // FetchParams controls how many and which jobs a worker claims.
@@ -123,10 +123,10 @@ type FetchParams struct {
 
 // JobSetStateParams transitions a running job to a new state.
 type JobSetStateParams struct {
-	ID       string
-	State    JobState
-	Err      *string   // serialized error for failed/retryable states
-	RetryAt  time.Time // populated when State == JobStateRetryable
+	ID      string
+	State   JobState
+	Err     *string   // serialized error for failed/retryable states
+	RetryAt time.Time // populated when State == JobStateRetryable
 }
 
 // RescheduleParams reschedules a job to run at a future time.
@@ -143,9 +143,9 @@ type QueueListParams struct {
 
 // LeaderElectParams carries the parameters for a leader election attempt.
 type LeaderElectParams struct {
-	Name      string
-	WorkerID  string
-	TTL       time.Duration
+	Name     string
+	WorkerID string
+	TTL      time.Duration
 }
 
 // --- Row types ---

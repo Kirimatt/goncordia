@@ -68,7 +68,7 @@ func (d *Driver) Capabilities() driver.Capabilities {
 	return driver.Capabilities{
 		NativeTx:      false,
 		ListenNotify:  true,
-		ChangeStreams:  false,
+		ChangeStreams: false,
 		SkipLocked:    false,
 		UniqueJobs:    true,
 		AdvisoryLocks: false,

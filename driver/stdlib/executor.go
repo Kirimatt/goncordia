@@ -622,14 +622,14 @@ type rowScanner interface {
 
 func scanJobRow(d Dialect, s rowScanner) (*driver.JobRow, error) {
 	var (
-		r           driver.JobRow
-		idStr       string
-		state       string
-		timeoutMS   int64
-		uniqueKey   sql.NullString
-		workerID    sql.NullString
-		tagsRaw     []byte
-		errorsRaw   []byte
+		r         driver.JobRow
+		idStr     string
+		state     string
+		timeoutMS int64
+		uniqueKey sql.NullString
+		workerID  sql.NullString
+		tagsRaw   []byte
+		errorsRaw []byte
 	)
 	err := s.Scan(
 		&idStr, &r.Queue, &r.Kind, &r.Args, &state, &r.Priority, &r.RunAt,

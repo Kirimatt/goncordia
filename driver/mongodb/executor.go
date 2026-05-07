@@ -283,8 +283,8 @@ func jobFetchBatch(ctx context.Context, db *mongo.Database, clk clock.Clock, par
 	now := clk.Now()
 
 	filter := bson.M{
-		"queue": params.Queue,
-		"state": bson.M{"$in": bson.A{string(driver.JobStateAvailable), string(driver.JobStateScheduled)}},
+		"queue":  params.Queue,
+		"state":  bson.M{"$in": bson.A{string(driver.JobStateAvailable), string(driver.JobStateScheduled)}},
 		"run_at": bson.M{"$lte": now},
 	}
 	update := bson.M{

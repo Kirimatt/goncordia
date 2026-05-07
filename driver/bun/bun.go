@@ -68,11 +68,11 @@ func New(db *bun.DB, opts ...Option) *Driver {
 // Migrate creates the goncordia schema in the database.
 func (d *Driver) Migrate(ctx context.Context) error { return d.inner.Migrate(ctx) }
 
-func (d *Driver) Name() string                       { return d.inner.Name() }
+func (d *Driver) Name() string                      { return d.inner.Name() }
 func (d *Driver) Capabilities() driver.Capabilities { return d.inner.Capabilities() }
-func (d *Driver) Executor() driver.Executor          { return d.inner.Executor() }
-func (d *Driver) Listener() driver.Listener          { return nil }
-func (d *Driver) Close() error                       { return nil } // bun owns the connection lifecycle
+func (d *Driver) Executor() driver.Executor         { return d.inner.Executor() }
+func (d *Driver) Listener() driver.Listener         { return nil }
+func (d *Driver) Close() error                      { return nil } // bun owns the connection lifecycle
 
 // UnwrapTx extracts the *sql.Tx embedded in bun.Tx.
 // tx must be obtained from db.BeginTx or db.RunInTx.

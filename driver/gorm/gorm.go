@@ -73,11 +73,11 @@ func New(db *gormpkg.DB, opts ...Option) (*Driver, error) {
 // Migrate creates the goncordia schema in the database.
 func (d *Driver) Migrate(ctx context.Context) error { return d.inner.Migrate(ctx) }
 
-func (d *Driver) Name() string                       { return d.inner.Name() }
+func (d *Driver) Name() string                      { return d.inner.Name() }
 func (d *Driver) Capabilities() driver.Capabilities { return d.inner.Capabilities() }
-func (d *Driver) Executor() driver.Executor          { return d.inner.Executor() }
-func (d *Driver) Listener() driver.Listener          { return nil }
-func (d *Driver) Close() error                       { return nil } // gorm owns the connection lifecycle
+func (d *Driver) Executor() driver.Executor         { return d.inner.Executor() }
+func (d *Driver) Listener() driver.Listener         { return nil }
+func (d *Driver) Close() error                      { return nil } // gorm owns the connection lifecycle
 
 // UnwrapTx extracts the *sql.Tx from a gorm transaction object.
 // tx must be a *gorm.DB returned by db.Begin() or passed inside db.Transaction().

@@ -20,7 +20,7 @@ type Real struct{}
 
 func (Real) Now() time.Time                         { return time.Now() }
 func (Real) Since(t time.Time) time.Duration        { return time.Since(t) }
-func (Real) After(d time.Duration) <-chan time.Time  { return time.After(d) }
+func (Real) After(d time.Duration) <-chan time.Time { return time.After(d) }
 func (Real) NewTicker(d time.Duration) *time.Ticker { return time.NewTicker(d) }
 
 // Mock is a controllable fake clock for tests.
