@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [v0.9.0] — 2026-05-08
+
+### Added
+- **Cloud Firestore driver** (`driver/firestore`): Google Cloud Firestore via `cloud.google.com/go/firestore`
+  - ACID multi-document transactions via `RunTransaction` — `EnqueueTx` is truly atomic
+  - Pass `*firestore.Transaction` to `EnqueueTx` from inside a `RunTransaction` callback
+  - Reads-before-writes ordering respected in the transactional insert path
+  - Unique-key deduplication via conditional `Create` in a transaction
+  - Optimistic concurrency for concurrent job claiming — each claim uses `RunTransaction`
+  - `Migrate` is a no-op; composite index `(queue ASC, state ASC, run_at ASC)` must be created in the Firebase console for production
+  - Firestore emulator supported: set `FIRESTORE_EMULATOR_HOST` before creating the client
+  - Four tests: `EnqueueAndProcess`, `UniqueJobs`, `RetryAndDiscard`, `EnqueueTx`
+
+---
+
 ## [v0.8.0] — 2026-05-08
 
 ### Added
@@ -144,6 +159,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Clock` interface + `MockClock` for deterministic time control in tests
 - MIT License
 
+[v0.9.0]: https://github.com/kirimatt/goncordia/releases/tag/v0.9.0
 [v0.8.0]: https://github.com/kirimatt/goncordia/releases/tag/v0.8.0
 [v0.7.4]: https://github.com/kirimatt/goncordia/releases/tag/v0.7.4
 [v0.7.3]: https://github.com/kirimatt/goncordia/releases/tag/v0.7.3

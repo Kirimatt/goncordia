@@ -1,0 +1,757 @@
+package firestoredriver
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"sort"
+	"time"
+
+	"cloud.google.com/go/firestore"
+	"github.com/google/uuid"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
+	"github.com/kirimatt/goncordia/driver"
+	"github.com/kirimatt/goncordia/internal/clock"
+)
+
+// errJobGone signals that a candidate job was already claimed by another worker.
+var errJobGone = errors.New("job no longer available")
+
+// ---- document types ----
+
+type jobDoc struct {
+	ID          string     `firestore:"id"`
+	Queue       string     `firestore:"queue"`
+	Kind        string     `firestore:"kind"`
+	Args        string     `firestore:"args"` // JSON string
+	State       string     `firestore:"state"`
+	Priority    int        `firestore:"priority"`
+	RunAt       time.Time  `firestore:"run_at"`
+	CreatedAt   time.Time  `firestore:"created_at"`
+	AttemptedAt time.Time  `firestore:"attempted_at"` // zero if not yet attempted
+	FinalizedAt time.Time  `firestore:"finalized_at"` // zero if not finalized
+	AttemptNum  int        `firestore:"attempt_num"`
+	MaxRetry    int        `firestore:"max_retry"`
+	TimeoutMs   int64      `firestore:"timeout_ms"`
+	UniqueKey   string     `firestore:"unique_key"`
+	WorkerID    string     `firestore:"worker_id"`
+	Tags        []string   `firestore:"tags"`
+	Errors      []jobError `firestore:"errors"`
+	Version     int64      `firestore:"version"`
+}
+
+type jobError struct {
+	At      time.Time `firestore:"at"`
+	Attempt int       `firestore:"attempt"`
+	Message string    `firestore:"message"`
+}
+
+type queueDoc struct {
+	Name      string    `firestore:"name"`
+	Paused    bool      `firestore:"paused"`
+	CreatedAt time.Time `firestore:"created_at"`
+	UpdatedAt time.Time `firestore:"updated_at"`
+}
+
+type leaderDoc struct {
+	Name      string    `firestore:"name"`
+	WorkerID  string    `firestore:"worker_id"`
+	ExpiresAt time.Time `firestore:"expires_at"`
+}
+
+// ---- executor (non-transactional) ----
+
+type executor struct {
+	client *firestore.Client
+	clk    clock.Clock
+}
+
+func (e *executor) Begin(_ context.Context) (driver.ExecutorTx, error) {
+	// Firestore transactions must be started via RunTransaction.
+	// The engine never calls Begin; return an error to surface misuse early.
+	return nil, fmt.Errorf("firestoredriver: Begin is not supported; use client.RunTransaction + EnqueueTx")
+}
+
+func (e *executor) JobInsertMany(ctx context.Context, params []driver.JobInsertParams) ([]driver.JobInsertResult, error) {
+	return jobInsertMany(ctx, e.client, e.clk, params)
+}
+func (e *executor) JobGetByID(ctx context.Context, id string) (*driver.JobRow, error) {
+	return jobGetByID(ctx, e.client, id)
+}
+func (e *executor) JobFetchBatch(ctx context.Context, params driver.FetchParams) ([]driver.JobRow, error) {
+	return jobFetchBatch(ctx, e.client, e.clk, params)
+}
+func (e *executor) JobSetStateIfRunning(ctx context.Context, params driver.JobSetStateParams) error {
+	return jobSetStateIfRunning(ctx, e.client, e.clk, params)
+}
+func (e *executor) JobCancel(ctx context.Context, id string) error {
+	return jobCancel(ctx, e.client, e.clk, id)
+}
+func (e *executor) JobDelete(ctx context.Context, id string) error {
+	return jobDelete(ctx, e.client, id)
+}
+func (e *executor) JobReschedule(ctx context.Context, params driver.RescheduleParams) error {
+	return jobReschedule(ctx, e.client, params)
+}
+func (e *executor) QueueGet(ctx context.Context, name string) (*driver.QueueRow, error) {
+	return queueGet(ctx, e.client, e.clk, name)
+}
+func (e *executor) QueuePause(ctx context.Context, name string) error {
+	return queueSetPaused(ctx, e.client, e.clk, name, true)
+}
+func (e *executor) QueueResume(ctx context.Context, name string) error {
+	return queueSetPaused(ctx, e.client, e.clk, name, false)
+}
+func (e *executor) QueueList(ctx context.Context, params driver.QueueListParams) ([]*driver.QueueRow, error) {
+	return queueList(ctx, e.client, params)
+}
+func (e *executor) LeaderAttemptElect(ctx context.Context, params driver.LeaderElectParams) (bool, error) {
+	return leaderAttemptElect(ctx, e.client, e.clk, params)
+}
+func (e *executor) LeaderResign(ctx context.Context, name string) error {
+	return leaderResign(ctx, e.client, name)
+}
+
+// ---- txExecutor (wraps *firestore.Transaction from user's RunTransaction callback) ----
+
+type txExecutor struct {
+	client *firestore.Client
+	tx     *firestore.Transaction
+	clk    clock.Clock
+}
+
+func (t *txExecutor) Commit(_ context.Context) error   { return nil } // managed by RunTransaction
+func (t *txExecutor) Rollback(_ context.Context) error { return nil } // managed by RunTransaction
+func (t *txExecutor) Begin(_ context.Context) (driver.ExecutorTx, error) {
+	return nil, fmt.Errorf("nested transactions not supported")
+}
+
+func (t *txExecutor) JobInsertMany(ctx context.Context, params []driver.JobInsertParams) ([]driver.JobInsertResult, error) {
+	return jobInsertManyTx(ctx, t.client, t.tx, t.clk, params)
+}
+func (t *txExecutor) JobGetByID(ctx context.Context, id string) (*driver.JobRow, error) {
+	snap, err := t.tx.Get(t.client.Collection(colJobs).Doc(id))
+	if err != nil {
+		if status.Code(err) == codes.NotFound {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var j jobDoc
+	if err := snap.DataTo(&j); err != nil {
+		return nil, err
+	}
+	return docToRow(j), nil
+}
+func (t *txExecutor) JobFetchBatch(ctx context.Context, params driver.FetchParams) ([]driver.JobRow, error) {
+	// Not typically called in a user transaction; fall through to non-tx path.
+	return jobFetchBatch(ctx, t.client, t.clk, params)
+}
+func (t *txExecutor) JobSetStateIfRunning(ctx context.Context, params driver.JobSetStateParams) error {
+	return jobSetStateIfRunning(ctx, t.client, t.clk, params)
+}
+func (t *txExecutor) JobCancel(ctx context.Context, id string) error {
+	return jobCancel(ctx, t.client, t.clk, id)
+}
+func (t *txExecutor) JobDelete(ctx context.Context, id string) error {
+	return jobDelete(ctx, t.client, id)
+}
+func (t *txExecutor) JobReschedule(ctx context.Context, params driver.RescheduleParams) error {
+	return jobReschedule(ctx, t.client, params)
+}
+func (t *txExecutor) QueueGet(ctx context.Context, name string) (*driver.QueueRow, error) {
+	return queueGet(ctx, t.client, t.clk, name)
+}
+func (t *txExecutor) QueuePause(ctx context.Context, name string) error {
+	return queueSetPaused(ctx, t.client, t.clk, name, true)
+}
+func (t *txExecutor) QueueResume(ctx context.Context, name string) error {
+	return queueSetPaused(ctx, t.client, t.clk, name, false)
+}
+func (t *txExecutor) QueueList(ctx context.Context, params driver.QueueListParams) ([]*driver.QueueRow, error) {
+	return queueList(ctx, t.client, params)
+}
+func (t *txExecutor) LeaderAttemptElect(ctx context.Context, params driver.LeaderElectParams) (bool, error) {
+	return leaderAttemptElect(ctx, t.client, t.clk, params)
+}
+func (t *txExecutor) LeaderResign(ctx context.Context, name string) error {
+	return leaderResign(ctx, t.client, name)
+}
+
+// ---- JobInsertMany (non-tx) ----
+
+func jobInsertMany(ctx context.Context, client *firestore.Client, clk clock.Clock, params []driver.JobInsertParams) ([]driver.JobInsertResult, error) {
+	now := clk.Now()
+	results := make([]driver.JobInsertResult, len(params))
+
+	for i, p := range params {
+		runAt := p.RunAt
+		if runAt.IsZero() {
+			runAt = now
+		}
+		state := driver.JobStateAvailable
+		if runAt.After(now) {
+			state = driver.JobStateScheduled
+		}
+		id := uuid.New().String()
+		tags := p.Tags
+		if tags == nil {
+			tags = []string{}
+		}
+
+		doc := jobDoc{
+			ID:         id,
+			Queue:      p.Queue,
+			Kind:       p.Kind,
+			Args:       string(p.Args),
+			State:      string(state),
+			Priority:   p.Priority,
+			RunAt:      runAt.UTC(),
+			CreatedAt:  now.UTC(),
+			AttemptNum: 0,
+			MaxRetry:   p.MaxRetry,
+			TimeoutMs:  p.Timeout.Milliseconds(),
+			UniqueKey:  p.UniqueKey,
+			Tags:       tags,
+			Errors:     []jobError{},
+			Version:    1,
+		}
+
+		jobRef := client.Collection(colJobs).Doc(id)
+
+		if p.UniqueKey != "" {
+			uniqRef := client.Collection(colUniq).Doc(p.Queue + "#" + p.UniqueKey)
+			var skip bool
+			if err := client.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
+				snap, err := tx.Get(uniqRef)
+				if err == nil && snap.Exists() {
+					skip = true
+					return nil
+				}
+				if err != nil && status.Code(err) != codes.NotFound {
+					return err
+				}
+				if err := tx.Create(jobRef, doc); err != nil {
+					return err
+				}
+				return tx.Create(uniqRef, map[string]interface{}{"job_id": id})
+			}); err != nil {
+				return nil, fmt.Errorf("insert job %d: %w", i, err)
+			}
+			if skip {
+				results[i] = driver.JobInsertResult{UniqueSkip: true}
+				continue
+			}
+		} else {
+			if _, err := jobRef.Create(ctx, doc); err != nil {
+				return nil, fmt.Errorf("insert job %d: %w", i, err)
+			}
+		}
+
+		// Ensure queue metadata row exists (ignore if already created).
+		qRef := client.Collection(colQueues).Doc(p.Queue)
+		if _, err := qRef.Create(ctx, queueDoc{
+			Name:      p.Queue,
+			Paused:    false,
+			CreatedAt: now.UTC(),
+			UpdatedAt: now.UTC(),
+		}); err != nil && status.Code(err) != codes.AlreadyExists {
+			return nil, fmt.Errorf("upsert queue: %w", err)
+		}
+
+		results[i] = driver.JobInsertResult{Job: docToRow(doc)}
+	}
+	return results, nil
+}
+
+// ---- JobInsertMany (transactional — all reads before all writes) ----
+
+func jobInsertManyTx(ctx context.Context, client *firestore.Client, tx *firestore.Transaction, clk clock.Clock, params []driver.JobInsertParams) ([]driver.JobInsertResult, error) {
+	now := clk.Now()
+	results := make([]driver.JobInsertResult, len(params))
+
+	type entry struct {
+		jobRef  *firestore.DocumentRef
+		uniqRef *firestore.DocumentRef
+		doc     jobDoc
+		skip    bool
+	}
+	entries := make([]entry, len(params))
+
+	// Phase 1 — all reads.
+	for i, p := range params {
+		runAt := p.RunAt
+		if runAt.IsZero() {
+			runAt = now
+		}
+		state := driver.JobStateAvailable
+		if runAt.After(now) {
+			state = driver.JobStateScheduled
+		}
+		id := uuid.New().String()
+		tags := p.Tags
+		if tags == nil {
+			tags = []string{}
+		}
+		doc := jobDoc{
+			ID:         id,
+			Queue:      p.Queue,
+			Kind:       p.Kind,
+			Args:       string(p.Args),
+			State:      string(state),
+			Priority:   p.Priority,
+			RunAt:      runAt.UTC(),
+			CreatedAt:  now.UTC(),
+			AttemptNum: 0,
+			MaxRetry:   p.MaxRetry,
+			TimeoutMs:  p.Timeout.Milliseconds(),
+			UniqueKey:  p.UniqueKey,
+			Tags:       tags,
+			Errors:     []jobError{},
+			Version:    1,
+		}
+		entries[i] = entry{
+			jobRef: client.Collection(colJobs).Doc(id),
+			doc:    doc,
+		}
+
+		if p.UniqueKey != "" {
+			uniqRef := client.Collection(colUniq).Doc(p.Queue + "#" + p.UniqueKey)
+			entries[i].uniqRef = uniqRef
+			snap, err := tx.Get(uniqRef)
+			if err != nil && status.Code(err) != codes.NotFound {
+				return nil, err
+			}
+			if err == nil && snap.Exists() {
+				entries[i].skip = true
+				results[i] = driver.JobInsertResult{UniqueSkip: true}
+			}
+		}
+	}
+
+	// Phase 2 — all writes.
+	for i, e := range entries {
+		if e.skip {
+			continue
+		}
+		if err := tx.Create(e.jobRef, e.doc); err != nil {
+			return nil, err
+		}
+		if e.uniqRef != nil {
+			if err := tx.Create(e.uniqRef, map[string]interface{}{"job_id": e.doc.ID}); err != nil {
+				return nil, err
+			}
+		}
+		results[i] = driver.JobInsertResult{Job: docToRow(e.doc)}
+	}
+	return results, nil
+}
+
+// ---- JobGetByID ----
+
+func jobGetByID(ctx context.Context, client *firestore.Client, id string) (*driver.JobRow, error) {
+	snap, err := client.Collection(colJobs).Doc(id).Get(ctx)
+	if err != nil {
+		if status.Code(err) == codes.NotFound {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var j jobDoc
+	if err := snap.DataTo(&j); err != nil {
+		return nil, err
+	}
+	return docToRow(j), nil
+}
+
+// ---- JobFetchBatch ----
+
+// jobFetchBatch queries candidates with a snapshot read, then claims each one
+// via a per-job transaction. Firestore's optimistic concurrency ensures only
+// one worker wins per job.
+func jobFetchBatch(ctx context.Context, client *firestore.Client, clk clock.Clock, params driver.FetchParams) ([]driver.JobRow, error) {
+	// Check if queue is paused.
+	qSnap, err := client.Collection(colQueues).Doc(params.Queue).Get(ctx)
+	if err == nil && qSnap.Exists() {
+		var q queueDoc
+		qSnap.DataTo(&q) //nolint:errcheck
+		if q.Paused {
+			return nil, nil
+		}
+	}
+
+	now := clk.Now()
+
+	snaps, err := client.Collection(colJobs).
+		Where("queue", "==", params.Queue).
+		Where("state", "==", string(driver.JobStateAvailable)).
+		Where("run_at", "<=", now).
+		Limit(params.Limit * 3).
+		Documents(ctx).GetAll()
+	if err != nil {
+		return nil, fmt.Errorf("query available jobs: %w", err)
+	}
+
+	// Decode and sort: highest priority first, then earliest run_at.
+	type candidate struct {
+		ref *firestore.DocumentRef
+		j   jobDoc
+	}
+	candidates := make([]candidate, 0, len(snaps))
+	for _, s := range snaps {
+		var j jobDoc
+		if err := s.DataTo(&j); err != nil {
+			continue
+		}
+		candidates = append(candidates, candidate{ref: s.Ref, j: j})
+	}
+	sort.Slice(candidates, func(i, k int) bool {
+		if candidates[i].j.Priority != candidates[k].j.Priority {
+			return candidates[i].j.Priority > candidates[k].j.Priority
+		}
+		return candidates[i].j.RunAt.Before(candidates[k].j.RunAt)
+	})
+
+	var claimed []driver.JobRow
+	for _, c := range candidates {
+		if len(claimed) >= params.Limit {
+			break
+		}
+
+		claimTime := clk.Now()
+		err := client.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
+			snap, err := tx.Get(c.ref)
+			if err != nil {
+				return err
+			}
+			var cur jobDoc
+			if err := snap.DataTo(&cur); err != nil {
+				return err
+			}
+			if cur.State != string(driver.JobStateAvailable) {
+				return errJobGone
+			}
+			return tx.Update(c.ref, []firestore.Update{
+				{Path: "state", Value: string(driver.JobStateRunning)},
+				{Path: "worker_id", Value: params.WorkerID},
+				{Path: "attempted_at", Value: claimTime.UTC()},
+				{Path: "attempt_num", Value: firestore.Increment(1)},
+				{Path: "version", Value: firestore.Increment(1)},
+			})
+		})
+		if errors.Is(err, errJobGone) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("claim job: %w", err)
+		}
+
+		j := c.j
+		row := driver.JobRow{
+			ID:          j.ID,
+			Queue:       j.Queue,
+			Kind:        j.Kind,
+			Args:        []byte(j.Args),
+			State:       driver.JobStateRunning,
+			Priority:    j.Priority,
+			RunAt:       j.RunAt,
+			CreatedAt:   j.CreatedAt,
+			AttemptedAt: &claimTime,
+			AttemptNum:  j.AttemptNum + 1,
+			MaxRetry:    j.MaxRetry,
+			Timeout:     time.Duration(j.TimeoutMs) * time.Millisecond,
+			Tags:        j.Tags,
+			Errors:      jobErrorsToRow(j.Errors),
+			UniqueKey:   j.UniqueKey,
+			WorkerID:    params.WorkerID,
+		}
+		claimed = append(claimed, row)
+	}
+	return claimed, nil
+}
+
+// ---- JobSetStateIfRunning ----
+
+func jobSetStateIfRunning(ctx context.Context, client *firestore.Client, clk clock.Clock, params driver.JobSetStateParams) error {
+	jobRef := client.Collection(colJobs).Doc(params.ID)
+	return client.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
+		snap, err := tx.Get(jobRef)
+		if err != nil {
+			if status.Code(err) == codes.NotFound {
+				return nil
+			}
+			return err
+		}
+		var j jobDoc
+		if err := snap.DataTo(&j); err != nil {
+			return err
+		}
+		if j.State != string(driver.JobStateRunning) {
+			return nil
+		}
+
+		now := clk.Now()
+		updates := []firestore.Update{
+			{Path: "worker_id", Value: ""},
+			{Path: "version", Value: firestore.Increment(1)},
+		}
+
+		if params.Err != nil {
+			newErrors := append(j.Errors, jobError{
+				At:      now,
+				Attempt: j.AttemptNum,
+				Message: *params.Err,
+			})
+			updates = append(updates, firestore.Update{Path: "errors", Value: newErrors})
+		}
+
+		switch params.State {
+		case driver.JobStateRetryable:
+			retryAt := params.RetryAt
+			if retryAt.IsZero() {
+				retryAt = now
+			}
+			updates = append(updates,
+				firestore.Update{Path: "state", Value: string(driver.JobStateAvailable)},
+				firestore.Update{Path: "run_at", Value: retryAt.UTC()},
+			)
+		default:
+			updates = append(updates,
+				firestore.Update{Path: "state", Value: string(params.State)},
+				firestore.Update{Path: "finalized_at", Value: now.UTC()},
+			)
+		}
+
+		return tx.Update(jobRef, updates)
+	})
+}
+
+// ---- JobCancel ----
+
+func jobCancel(ctx context.Context, client *firestore.Client, clk clock.Clock, id string) error {
+	jobRef := client.Collection(colJobs).Doc(id)
+	return client.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
+		snap, err := tx.Get(jobRef)
+		if err != nil {
+			if status.Code(err) == codes.NotFound {
+				return fmt.Errorf("job %q not found", id)
+			}
+			return err
+		}
+		var j jobDoc
+		if err := snap.DataTo(&j); err != nil {
+			return err
+		}
+		if j.State != string(driver.JobStateAvailable) && j.State != string(driver.JobStateScheduled) {
+			return fmt.Errorf("job %q is in state %s, can only cancel available/scheduled", id, j.State)
+		}
+		now := clk.Now()
+		if err := tx.Update(jobRef, []firestore.Update{
+			{Path: "state", Value: string(driver.JobStateCancelled)},
+			{Path: "finalized_at", Value: now.UTC()},
+			{Path: "version", Value: firestore.Increment(1)},
+		}); err != nil {
+			return err
+		}
+		if j.UniqueKey != "" {
+			tx.Delete(client.Collection(colUniq).Doc(j.Queue + "#" + j.UniqueKey)) //nolint:errcheck
+		}
+		return nil
+	})
+}
+
+// ---- JobDelete ----
+
+func jobDelete(ctx context.Context, client *firestore.Client, id string) error {
+	jobRef := client.Collection(colJobs).Doc(id)
+	snap, err := client.Collection(colJobs).Doc(id).Get(ctx)
+	if err != nil {
+		if status.Code(err) == codes.NotFound {
+			return nil
+		}
+		return err
+	}
+	var j jobDoc
+	if err := snap.DataTo(&j); err != nil {
+		return err
+	}
+	if _, err := jobRef.Delete(ctx); err != nil {
+		return err
+	}
+	if j.UniqueKey != "" {
+		client.Collection(colUniq).Doc(j.Queue+"#"+j.UniqueKey).Delete(ctx) //nolint:errcheck
+	}
+	return nil
+}
+
+// ---- JobReschedule ----
+
+func jobReschedule(ctx context.Context, client *firestore.Client, params driver.RescheduleParams) error {
+	_, err := client.Collection(colJobs).Doc(params.ID).Update(ctx, []firestore.Update{
+		{Path: "state", Value: string(driver.JobStateScheduled)},
+		{Path: "run_at", Value: params.RunAt.UTC()},
+		{Path: "version", Value: firestore.Increment(1)},
+	})
+	return err
+}
+
+// ---- Queue ----
+
+func queueGet(ctx context.Context, client *firestore.Client, clk clock.Clock, name string) (*driver.QueueRow, error) {
+	snap, err := client.Collection(colQueues).Doc(name).Get(ctx)
+	if err != nil {
+		if status.Code(err) == codes.NotFound {
+			// Auto-create on first access.
+			now := clk.Now()
+			doc := queueDoc{Name: name, Paused: false, CreatedAt: now.UTC(), UpdatedAt: now.UTC()}
+			if _, cerr := client.Collection(colQueues).Doc(name).Create(ctx, doc); cerr != nil && status.Code(cerr) != codes.AlreadyExists {
+				return nil, cerr
+			}
+			return &driver.QueueRow{Name: name, CreatedAt: now, UpdatedAt: now}, nil
+		}
+		return nil, err
+	}
+	var q queueDoc
+	if err := snap.DataTo(&q); err != nil {
+		return nil, err
+	}
+	return &driver.QueueRow{
+		Name:      q.Name,
+		Paused:    q.Paused,
+		CreatedAt: q.CreatedAt,
+		UpdatedAt: q.UpdatedAt,
+	}, nil
+}
+
+func queueSetPaused(ctx context.Context, client *firestore.Client, clk clock.Clock, name string, paused bool) error {
+	_, err := client.Collection(colQueues).Doc(name).Update(ctx, []firestore.Update{
+		{Path: "paused", Value: paused},
+		{Path: "updated_at", Value: clk.Now().UTC()},
+	})
+	return err
+}
+
+func queueList(ctx context.Context, client *firestore.Client, params driver.QueueListParams) ([]*driver.QueueRow, error) {
+	limit := params.Limit
+	if limit <= 0 {
+		limit = 100
+	}
+	snaps, err := client.Collection(colQueues).Limit(limit).Documents(ctx).GetAll()
+	if err != nil {
+		return nil, err
+	}
+	rows := make([]*driver.QueueRow, 0, len(snaps))
+	for _, snap := range snaps {
+		var q queueDoc
+		if err := snap.DataTo(&q); err != nil {
+			continue
+		}
+		rows = append(rows, &driver.QueueRow{
+			Name:      q.Name,
+			Paused:    q.Paused,
+			CreatedAt: q.CreatedAt,
+			UpdatedAt: q.UpdatedAt,
+		})
+	}
+	return rows, nil
+}
+
+// ---- Leader election ----
+
+// leaderAttemptElect claims or renews leadership using a conditional transaction.
+func leaderAttemptElect(ctx context.Context, client *firestore.Client, clk clock.Clock, params driver.LeaderElectParams) (bool, error) {
+	ref := client.Collection(colLeaders).Doc(params.Name)
+	var elected bool
+	err := client.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
+		elected = false
+		now := clk.Now()
+		snap, err := tx.Get(ref)
+		if err != nil && status.Code(err) != codes.NotFound {
+			return err
+		}
+
+		if err != nil || !snap.Exists() {
+			// No leader — claim it.
+			elected = true
+			return tx.Create(ref, leaderDoc{
+				Name:      params.Name,
+				WorkerID:  params.WorkerID,
+				ExpiresAt: now.Add(params.TTL).UTC(),
+			})
+		}
+
+		var cur leaderDoc
+		if err := snap.DataTo(&cur); err != nil {
+			return err
+		}
+		// Allow claim if expired or we are already the leader.
+		if now.Before(cur.ExpiresAt) && cur.WorkerID != params.WorkerID {
+			return nil // another worker holds the lease
+		}
+		elected = true
+		return tx.Update(ref, []firestore.Update{
+			{Path: "worker_id", Value: params.WorkerID},
+			{Path: "expires_at", Value: now.Add(params.TTL).UTC()},
+		})
+	})
+	return elected, err
+}
+
+func leaderResign(ctx context.Context, client *firestore.Client, name string) error {
+	_, err := client.Collection(colLeaders).Doc(name).Delete(ctx)
+	return err
+}
+
+// ---- helpers ----
+
+func docToRow(j jobDoc) *driver.JobRow {
+	row := &driver.JobRow{
+		ID:         j.ID,
+		Queue:      j.Queue,
+		Kind:       j.Kind,
+		Args:       []byte(j.Args),
+		State:      driver.JobState(j.State),
+		Priority:   j.Priority,
+		RunAt:      j.RunAt,
+		CreatedAt:  j.CreatedAt,
+		AttemptNum: j.AttemptNum,
+		MaxRetry:   j.MaxRetry,
+		Timeout:    time.Duration(j.TimeoutMs) * time.Millisecond,
+		UniqueKey:  j.UniqueKey,
+		WorkerID:   j.WorkerID,
+		Tags:       j.Tags,
+		Errors:     jobErrorsToRow(j.Errors),
+	}
+	if !j.AttemptedAt.IsZero() {
+		t := j.AttemptedAt
+		row.AttemptedAt = &t
+	}
+	if !j.FinalizedAt.IsZero() {
+		t := j.FinalizedAt
+		row.FinalizedAt = &t
+	}
+	if row.Tags == nil {
+		row.Tags = []string{}
+	}
+	if len(row.Args) == 0 {
+		row.Args = []byte("{}")
+	}
+	return row
+}
+
+func jobErrorsToRow(errs []jobError) []driver.AttemptError {
+	if len(errs) == 0 {
+		return nil
+	}
+	out := make([]driver.AttemptError, len(errs))
+	for i, e := range errs {
+		out[i] = driver.AttemptError{At: e.At, Attempt: e.Attempt, Error: e.Message}
+	}
+	return out
+}
+
+// compile-time checks
+var _ driver.Executor = (*executor)(nil)
+var _ driver.ExecutorTx = (*txExecutor)(nil)

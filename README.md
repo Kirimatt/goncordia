@@ -8,7 +8,7 @@
 
 A job queue engine for Go that works with the database you already have.
 
-One `Driver[TTx]` interface parameterized by your library's native transaction type covers Postgres, MySQL, SQLite, MongoDB, Redis, Cassandra, ClickHouse, DynamoDB, and in-memory — without forcing you to adopt a new dependency.
+One `Driver[TTx]` interface parameterized by your library's native transaction type covers Postgres, MySQL, SQLite, MongoDB, Redis, Cassandra, ClickHouse, DynamoDB, Firestore, and in-memory — without forcing you to adopt a new dependency.
 
 ```go
 tx, _ := pool.Begin(ctx)
@@ -47,6 +47,7 @@ tx.Commit(ctx)  // job and order appear atomically
 | Cassandra 3.11+ | `driver/cassandra` | `NoTx` | ❌ | LWT claiming; ScyllaDB / DSE compatible |
 | ClickHouse 23+ | `driver/clickhouse` | `NoTx` | ❌ | ReplacingMergeTree; at-least-once |
 | Amazon DynamoDB | `driver/dynamodb` | `NoTx` | ❌ | conditional writes; at-least-once |
+| Cloud Firestore | `driver/firestore` | `*firestore.Transaction` | ✅ | RunTransaction; composite index required |
 | In-memory | `driver/memory` | `memory.NoTx` | ✅ | no persistence; for tests |
 
 ---
@@ -86,6 +87,9 @@ go get github.com/kirimatt/goncordia/driver/clickhouse github.com/ClickHouse/cli
 
 # Amazon DynamoDB
 go get github.com/kirimatt/goncordia/driver/dynamodb github.com/aws/aws-sdk-go-v2/service/dynamodb
+
+# Cloud Firestore
+go get github.com/kirimatt/goncordia/driver/firestore cloud.google.com/go/firestore
 ```
 
 ---
@@ -287,6 +291,30 @@ client.Enqueue(ctx, SendEmailArgs{To: "user@example.com", Subject: "Welcome"}, n
 // DynamoDB has no cross-table transactions. EnqueueTx behaves like Enqueue.
 // Unique-key deduplication uses PutItem with attribute_not_exists condition.
 // Jobs are claimed with conditional UpdateItem — safe for concurrent workers.
+```
+
+### Cloud Firestore
+
+```go
+import (
+    "cloud.google.com/go/firestore"
+    firestoredriver "github.com/kirimatt/goncordia/driver/firestore"
+)
+
+fsClient, _ := firestore.NewClient(ctx, "my-gcp-project")
+d := firestoredriver.New(fsClient)
+// Migrate is a no-op; create composite index in Firebase console:
+//   collection: goncordia_jobs, fields: queue (ASC), state (ASC), run_at (ASC)
+d.Migrate(ctx)
+
+client := firestoredriver.NewClient(d, goncordia.ClientConfig{})
+
+// Transactional — job is enqueued atomically with business writes:
+fsClient.RunTransaction(ctx, func(ctx context.Context, tx *firestore.Transaction) error {
+    tx.Create(orders.Doc(id), orderData)
+    _, err := client.EnqueueTx(ctx, tx, SendConfirmationArgs{OrderID: id}, nil)
+    return err
+})
 ```
 
 ### SQLite (no Docker, good for tests)
@@ -609,7 +637,8 @@ goncordia/
 │   ├── redis/             # Redis (at-least-once; Pub/Sub notifications)
 │   ├── cassandra/         # Cassandra 3.11+ / ScyllaDB (LWT claiming; at-least-once)
 │   ├── clickhouse/        # ClickHouse 23+ (ReplacingMergeTree; at-least-once)
-│   └── dynamodb/          # Amazon DynamoDB (conditional writes; at-least-once)
+│   ├── dynamodb/          # Amazon DynamoDB (conditional writes; at-least-once)
+│   └── firestore/         # Cloud Firestore (RunTransaction; ACID inserts)
 ├── otel/                  # OpenTelemetry middleware (spans + metrics)
 └── internal/clock/        # Clock interface + MockClock
 ```
@@ -627,5 +656,6 @@ goncordia/
 | Cassandra | **None** — at-least-once | LWT for claiming; no cross-statement tx |
 | ClickHouse | **None** — at-least-once | ReplacingMergeTree + FINAL; no transactions |
 | DynamoDB | **None** — at-least-once | Conditional writes; no cross-table tx |
+| Firestore | Atomic with business tx | `RunTransaction` + `EnqueueTx` |
 | In-memory | Atomic (in-process) | Single mutex |
 
