@@ -2,6 +2,7 @@
 
 [![CI](https://github.com/kirimatt/goncordia/actions/workflows/ci.yml/badge.svg)](https://github.com/kirimatt/goncordia/actions/workflows/ci.yml)
 [![Go Reference](https://pkg.go.dev/badge/github.com/kirimatt/goncordia.svg)](https://pkg.go.dev/github.com/kirimatt/goncordia)
+[![GitHub release](https://img.shields.io/github/v/tag/kirimatt/goncordia?label=version)](https://github.com/kirimatt/goncordia/releases)
 
 A job queue engine for Go that works with the database you already have.
 
