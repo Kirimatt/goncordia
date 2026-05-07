@@ -70,8 +70,8 @@ func newTestClient(t *testing.T) (*firestore.Client, func()) {
 	}
 
 	return client, func() {
-		client.Close()        //nolint:errcheck
-		ctr.Terminate(ctx)    //nolint:errcheck
+		client.Close()     //nolint:errcheck
+		ctr.Terminate(ctx) //nolint:errcheck
 	}
 }
 

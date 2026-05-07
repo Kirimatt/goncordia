@@ -19,6 +19,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `Migrate` is a no-op; composite index `(queue ASC, state ASC, run_at ASC)` must be created in the Firebase console for production
   - Firestore emulator supported: set `FIRESTORE_EMULATOR_HOST` before creating the client
   - Four tests: `EnqueueAndProcess`, `UniqueJobs`, `RetryAndDiscard`, `EnqueueTx`
+- Firestore benchmarks added to `bench/bench_containers_test.go`
+- `benchmarkEndToEndN` helper for backends that need a smaller per-iteration workload
+- Updated README benchmark tables with Firestore results
 
 ---
 

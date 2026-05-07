@@ -170,6 +170,53 @@ func BenchmarkFetchAndComplete_SQLite(b *testing.B) {
 
 const e2eWorkload = 1000
 
+func benchmarkEndToEndN[TTx any](b *testing.B, d driver.Driver[TTx], concurrency, workload int) {
+	b.Helper()
+	ctx := context.Background()
+
+	registry := core.NewRegistry()
+	var processed atomic.Int64
+	core.RegisterWorker(registry, core.WorkerFunc[benchJob](func(_ context.Context, _ *core.Job[benchJob]) error {
+		processed.Add(1)
+		return nil
+	}), core.WorkerOpts{})
+
+	client := goncordia.NewClient[TTx](d, goncordia.ClientConfig{})
+	wp := goncordia.NewWorkerPool[TTx](d, registry, goncordia.WorkerConfig{
+		Queues:       []string{"default"},
+		Concurrency:  concurrency,
+		PollInterval: 5 * time.Millisecond,
+	})
+
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go wp.Start(runCtx) //nolint:errcheck
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	for range b.N {
+		processed.Store(0)
+		args := make([]core.JobArgs, workload)
+		for i := range args {
+			args[i] = benchJob{N: i}
+		}
+		if _, err := client.EnqueueMany(ctx, args, nil); err != nil {
+			b.Fatal(err)
+		}
+		deadline := time.Now().Add(60 * time.Second)
+		for processed.Load() < int64(workload) {
+			if time.Now().After(deadline) {
+				b.Fatalf("timeout: only %d/%d processed", processed.Load(), workload)
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}
+
+	wp.Stop()
+	b.ReportMetric(float64(workload*b.N)/b.Elapsed().Seconds(), "jobs/s")
+}
+
 func benchmarkEndToEnd[TTx any](b *testing.B, d driver.Driver[TTx], concurrency int) {
 	b.Helper()
 	ctx := context.Background()

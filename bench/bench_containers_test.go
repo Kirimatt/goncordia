@@ -27,10 +27,13 @@ import (
 	"go.mongodb.org/mongo-driver/mongo"
 	mongoopts "go.mongodb.org/mongo-driver/mongo/options"
 
+	"cloud.google.com/go/firestore"
+
 	"github.com/kirimatt/goncordia/driver"
 	cassandradriver "github.com/kirimatt/goncordia/driver/cassandra"
 	clickhousedriver "github.com/kirimatt/goncordia/driver/clickhouse"
 	dynamodbdriver "github.com/kirimatt/goncordia/driver/dynamodb"
+	firestoredriver "github.com/kirimatt/goncordia/driver/firestore"
 	mongodriver "github.com/kirimatt/goncordia/driver/mongodb"
 	pgxv5driver "github.com/kirimatt/goncordia/driver/pgxv5"
 	redisdriver "github.com/kirimatt/goncordia/driver/redis"
@@ -43,6 +46,7 @@ var (
 	benchCassandraDriver  driver.Driver[cassandradriver.NoTx]
 	benchClickHouseDriver driver.Driver[clickhousedriver.NoTx]
 	benchDynamoDBDriver   driver.Driver[dynamodbdriver.NoTx]
+	benchFirestoreDriver  driver.Driver[*firestore.Transaction]
 )
 
 func TestMain(m *testing.M) {
@@ -71,6 +75,10 @@ func TestMain(m *testing.M) {
 	}
 	if d, cleanup := startDynamoDB(ctx); d != nil {
 		benchDynamoDBDriver = d
+		cleanups = append(cleanups, cleanup)
+	}
+	if d, cleanup := startFirestore(ctx); d != nil {
+		benchFirestoreDriver = d
 		cleanups = append(cleanups, cleanup)
 	}
 
@@ -305,6 +313,46 @@ func startDynamoDB(ctx context.Context) (driver.Driver[dynamodbdriver.NoTx], fun
 	return d, func() { ctr.Terminate(ctx) } //nolint:errcheck
 }
 
+func startFirestore(ctx context.Context) (driver.Driver[*firestore.Transaction], func()) {
+	ctr, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
+		ContainerRequest: testcontainers.ContainerRequest{
+			Image:        "gcr.io/google.com/cloudsdktool/cloud-sdk:emulators",
+			ExposedPorts: []string{"8080/tcp"},
+			Cmd: []string{
+				"gcloud", "beta", "emulators", "firestore", "start",
+				"--host-port=0.0.0.0:8080", "--project=bench",
+			},
+			WaitingFor: wait.ForListeningPort("8080/tcp").WithStartupTimeout(120 * time.Second),
+		},
+		Started: true,
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "bench: skip firestore benchmarks: %v\n", err)
+		return nil, nil
+	}
+	addr, err := ctr.Endpoint(ctx, "")
+	if err != nil {
+		ctr.Terminate(ctx) //nolint:errcheck
+		return nil, nil
+	}
+	if err := os.Setenv("FIRESTORE_EMULATOR_HOST", addr); err != nil {
+		ctr.Terminate(ctx) //nolint:errcheck
+		return nil, nil
+	}
+	client, err := firestore.NewClient(ctx, "bench")
+	if err != nil {
+		os.Unsetenv("FIRESTORE_EMULATOR_HOST") //nolint:errcheck
+		ctr.Terminate(ctx)                     //nolint:errcheck
+		return nil, nil
+	}
+	d := firestoredriver.New(client)
+	return d, func() {
+		client.Close()                        //nolint:errcheck
+		os.Unsetenv("FIRESTORE_EMULATOR_HOST") //nolint:errcheck
+		ctr.Terminate(ctx)                    //nolint:errcheck
+	}
+}
+
 // ---- Enqueue ----
 
 func BenchmarkEnqueue_Postgres(b *testing.B) {
@@ -347,6 +395,13 @@ func BenchmarkEnqueue_DynamoDB(b *testing.B) {
 		b.Skip("dynamodb not available")
 	}
 	benchmarkEnqueue(b, benchDynamoDBDriver)
+}
+
+func BenchmarkEnqueue_Firestore(b *testing.B) {
+	if benchFirestoreDriver == nil {
+		b.Skip("firestore not available")
+	}
+	benchmarkEnqueue(b, benchFirestoreDriver)
 }
 
 // ---- EnqueueBatch(100) ----
@@ -393,6 +448,13 @@ func BenchmarkEnqueueBatch100_DynamoDB(b *testing.B) {
 	benchmarkEnqueueBatch(b, benchDynamoDBDriver, 100)
 }
 
+func BenchmarkEnqueueBatch100_Firestore(b *testing.B) {
+	if benchFirestoreDriver == nil {
+		b.Skip("firestore not available")
+	}
+	benchmarkEnqueueBatch(b, benchFirestoreDriver, 100)
+}
+
 // ---- FetchAndComplete ----
 
 func BenchmarkFetchAndComplete_Postgres(b *testing.B) {
@@ -437,6 +499,13 @@ func BenchmarkFetchAndComplete_DynamoDB(b *testing.B) {
 	benchmarkFetchAndComplete(b, benchDynamoDBDriver)
 }
 
+func BenchmarkFetchAndComplete_Firestore(b *testing.B) {
+	if benchFirestoreDriver == nil {
+		b.Skip("firestore not available")
+	}
+	benchmarkFetchAndComplete(b, benchFirestoreDriver)
+}
+
 // ---- End-to-end ----
 
 func BenchmarkEndToEnd_Postgres_c4(b *testing.B) {
@@ -479,4 +548,11 @@ func BenchmarkEndToEnd_DynamoDB_c4(b *testing.B) {
 		b.Skip("dynamodb not available")
 	}
 	benchmarkEndToEnd(b, benchDynamoDBDriver, 4)
+}
+
+func BenchmarkEndToEnd_Firestore_c4(b *testing.B) {
+	if benchFirestoreDriver == nil {
+		b.Skip("firestore not available")
+	}
+	benchmarkEndToEndN(b, benchFirestoreDriver, 4, 200)
 }
