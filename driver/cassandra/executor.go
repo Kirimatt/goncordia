@@ -236,10 +236,11 @@ func jobInsertMany(ctx context.Context, session *gocql.Session, clk clock.Clock,
 
 		// Unique-key check: INSERT IF NOT EXISTS into the uniq table.
 		if p.UniqueKey != "" {
+			m := map[string]interface{}{}
 			applied, err := session.Query(
 				`INSERT INTO goncordia_uniq (queue, ukey, job_id) VALUES (?, ?, ?) IF NOT EXISTS`,
 				p.Queue, p.UniqueKey, id,
-			).WithContext(ctx).ScanCAS()
+			).WithContext(ctx).MapScanCAS(m)
 			if err != nil {
 				return nil, fmt.Errorf("unique key check: %w", err)
 			}
@@ -382,7 +383,7 @@ func jobFetchBatch(ctx context.Context, session *gocql.Session, clk clock.Clock,
 			 WHERE id=? IF state=? AND version=?`,
 			string(driver.JobStateRunning), params.WorkerID, now, j.AttemptNum+1, newVersion,
 			c.id, string(driver.JobStateAvailable), j.Version,
-		).WithContext(ctx).ScanCAS()
+		).WithContext(ctx).MapScanCAS(map[string]interface{}{})
 		if lwtErr != nil {
 			return nil, fmt.Errorf("claim LWT: %w", lwtErr)
 		}
@@ -438,7 +439,7 @@ func jobSetStateIfRunning(ctx context.Context, session *gocql.Session, clk clock
 			`UPDATE goncordia_jobs SET state=?, run_at=?, worker_id='', errors_json=?, version=version+1
 			 WHERE id=? IF state=?`,
 			string(driver.JobStateAvailable), retryAt, errJSON, params.ID, string(driver.JobStateRunning),
-		).WithContext(ctx).ScanCAS()
+		).WithContext(ctx).MapScanCAS(map[string]interface{}{})
 		if err != nil {
 			return err
 		}
@@ -457,7 +458,7 @@ func jobSetStateIfRunning(ctx context.Context, session *gocql.Session, clk clock
 		`UPDATE goncordia_jobs SET state=?, finalized_at=?, worker_id='', errors_json=?, version=version+1
 		 WHERE id=? IF state=?`,
 		string(params.State), now, errJSON, params.ID, string(driver.JobStateRunning),
-	).WithContext(ctx).ScanCAS()
+	).WithContext(ctx).MapScanCAS(map[string]interface{}{})
 	return stateErr
 }
 
@@ -476,12 +477,12 @@ func jobCancel(ctx context.Context, session *gocql.Session, clk clock.Clock, id 
 	}
 
 	now := clk.Now()
-	if _, err := session.Query(
+	if _, cancelErr := session.Query(
 		`UPDATE goncordia_jobs SET state=?, finalized_at=?, version=version+1
 		 WHERE id=? IF state IN ('available','scheduled')`,
 		string(driver.JobStateCancelled), now, id,
-	).WithContext(ctx).ScanCAS(); err != nil {
-		return err
+	).WithContext(ctx).MapScanCAS(map[string]interface{}{}); cancelErr != nil {
+		return cancelErr
 	}
 
 	// Clean up avail lookup if it was available (not scheduled).
@@ -625,7 +626,7 @@ func leaderAttemptElect(ctx context.Context, session *gocql.Session, clk clock.C
 		applied, lwtErr := session.Query(
 			`INSERT INTO goncordia_leaders (name, worker_id, expires_at) VALUES (?, ?, ?) IF NOT EXISTS`,
 			params.Name, params.WorkerID, expiresAt,
-		).WithContext(ctx).ScanCAS()
+		).WithContext(ctx).MapScanCAS(map[string]interface{}{})
 		if lwtErr != nil {
 			return false, lwtErr
 		}
@@ -636,7 +637,7 @@ func leaderAttemptElect(ctx context.Context, session *gocql.Session, clk clock.C
 		applied, lwtErr = session.Query(
 			`UPDATE goncordia_leaders SET worker_id=?, expires_at=? WHERE name=? IF expires_at<?`,
 			params.WorkerID, expiresAt, params.Name, now,
-		).WithContext(ctx).ScanCAS()
+		).WithContext(ctx).MapScanCAS(map[string]interface{}{})
 		if lwtErr != nil {
 			return false, lwtErr
 		}
