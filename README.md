@@ -568,6 +568,82 @@ Cassandra's high per-operation latency comes from Lightweight Transaction consen
 
 ---
 
+## Testing
+
+`gontest` makes it easy to test workers and enqueue assertions without a real database.
+
+```bash
+go get github.com/kirimatt/goncordia/gontest
+```
+
+**Assert that business logic enqueues the right jobs:**
+
+```go
+func TestPlaceOrder_EnqueuesConfirmationEmail(t *testing.T) {
+    ctx := context.Background()
+    client, tracker := gontest.NewClient(t)
+
+    _ = PlaceOrder(ctx, client, "order-123") // calls client.Enqueue internally
+
+    jobs := gontest.RequireEnqueued[SendEmailArgs](t, tracker, 1)
+    if jobs[0].Args.OrderID != "order-123" {
+        t.Errorf("unexpected order ID: %s", jobs[0].Args.OrderID)
+    }
+}
+```
+
+**Unit-test a worker function without a database or pool:**
+
+```go
+func TestEmailWorker_SendsEmail(t *testing.T) {
+    h := gontest.NewWorkerHelper[SendEmailArgs](emailWorker)
+    if err := h.Work(ctx, SendEmailArgs{To: "user@example.com"}); err != nil {
+        t.Fatal(err)
+    }
+}
+
+// Or with a one-liner:
+gontest.RequireWork(t, ctx, emailWorker, SendEmailArgs{To: "user@example.com"})
+```
+
+**Test scheduled jobs with a controllable clock:**
+
+```go
+clk := gontest.NewMockClock()
+client, tracker := gontest.NewClientWithClock(t, clk)
+
+client.Enqueue(ctx, ReminderArgs{UserID: "u1"}, &core.InsertOpts{
+    RunAt: clk.Now().Add(24 * time.Hour),
+})
+
+// Job exists but is not yet available:
+gontest.RequireEnqueued[ReminderArgs](t, tracker, 1)
+
+// Advance past the scheduled time:
+clk.Advance(25 * time.Hour)
+// now start the pool — the job will be picked up immediately
+```
+
+**Run an end-to-end flow in memory:**
+
+```go
+registry := core.NewRegistry()
+core.RegisterWorker(registry, emailWorker, core.WorkerOpts{Queue: "default"})
+
+client, tracker := gontest.NewClient(t)
+pool := tracker.NewWorkerPool(registry, goncordia.WorkerConfig{
+    Queues: []string{"default"}, Concurrency: 2,
+})
+
+runCtx, cancel := context.WithCancel(ctx)
+defer cancel()
+go pool.Start(runCtx)
+// enqueue and wait for processed.Load() >= 1 ...
+pool.Stop()
+```
+
+---
+
 ## Observability (OpenTelemetry)
 
 ```bash
@@ -643,6 +719,7 @@ goncordia/
 │   ├── clickhouse/        # ClickHouse 23+ (ReplacingMergeTree; at-least-once)
 │   ├── dynamodb/          # Amazon DynamoDB (conditional writes; at-least-once)
 │   └── firestore/         # Cloud Firestore (RunTransaction; ACID inserts)
+├── gontest/               # test helpers (Tracker, WorkerHelper, MockClock)
 ├── otel/                  # OpenTelemetry middleware (spans + metrics)
 └── internal/clock/        # Clock interface + MockClock
 ```

@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [v0.11.0] — 2026-05-08
+
+### Added
+- **Test helpers** (`gontest/`): ergonomic testing utilities for workers and enqueue assertions
+  - `NewClient(t)` — in-memory test client + `Tracker` sharing one store; `t.Cleanup` registered automatically
+  - `NewClientWithClock(t, clk)` — same with a `MockClock` for scheduled-job tests
+  - `Tracker.NewWorkerPool(registry, cfg)` — worker pool sharing the tracker's store for E2E in-memory tests
+  - `Tracker.Driver()` — raw memory driver for state inspection (`AllJobs`, queue pausing, etc.)
+  - `Jobs[T](tracker)` — return all jobs of kind T with deserialized args
+  - `RequireEnqueued[T](t, tracker, n)` — assert exactly n jobs of kind T, returns them for arg inspection
+  - `RequireNoEnqueued[T](t, tracker)` — assert zero jobs of kind T
+  - `WorkerHelper[T]` — run a worker directly without a pool or database
+  - `NewWorkerHelper[T](w)` / `WorkerFuncHelper[T](fn)` — constructors
+  - `WorkerHelper.Work(ctx, args)` — invoke with minimal job fields (AttemptNum=1)
+  - `WorkerHelper.WorkJob(ctx, job)` — invoke with a fully-specified `*core.Job[T]`
+  - `RequireWork[T](t, ctx, w, args)` — one-liner: run worker, fatal on error
+  - `MustEnqueue[T](t, ctx, client, args, opts)` — enqueue, fatal on error
+  - `MockClock` (type alias for `internal/clock.Mock`) + `NewMockClock()`
+  - `FormatJobList[T](jobs)` — readable job list for custom failure messages
+- Added `gontest/` to project tree in README
+- Added Testing section to README with usage examples
+
+---
+
 ## [v0.10.0] — 2026-05-08
 
 ### Added
@@ -168,6 +192,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Clock` interface + `MockClock` for deterministic time control in tests
 - MIT License
 
+[v0.11.0]: https://github.com/kirimatt/goncordia/releases/tag/v0.11.0
 [v0.10.0]: https://github.com/kirimatt/goncordia/releases/tag/v0.10.0
 [v0.9.0]: https://github.com/kirimatt/goncordia/releases/tag/v0.9.0
 [v0.8.0]: https://github.com/kirimatt/goncordia/releases/tag/v0.8.0
