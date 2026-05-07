@@ -390,23 +390,52 @@ func (d *MyDriver) Close() error                       { return nil }
 ## Benchmarks
 
 ```
-go test ./bench/... -bench=. -benchmem -benchtime=5s
+go test ./bench/... -bench=. -benchmem -benchtime=5s -timeout=15m
 ```
 
-Numbers on Apple M5 (single process, no network):
+Apple M5, single process. Memory/SQLite are in-process (no network); Postgres/MongoDB/Redis run in Docker on localhost.
 
-| Benchmark | ops/s | ns/op | Notes |
+**Enqueue — single job**
+
+| Backend | ns/op | Notes |
+|---|---|---|
+| Memory | 1.4 µs | in-process mutex, no I/O |
+| SQLite | 28 µs | WAL mode, single connection |
+| Redis | 107 µs | ZADD over localhost |
+| Postgres (pgx v5) | 122 µs | INSERT over localhost |
+| MongoDB | 329 µs | insertOne over localhost |
+
+**EnqueueBatch(100) — 100 jobs per call**
+
+| Backend | ms/batch | jobs/s |
+|---|---|---|
+| Memory | 0.06 ms | ~1 700 000 |
+| SQLite | 2.7 ms | ~37 000 |
+| Redis | 10.4 ms | ~9 600 |
+| Postgres (pgx v5) | 12.6 ms | ~7 900 |
+| MongoDB | 34.8 ms | ~2 900 |
+
+**FetchAndComplete — hot worker loop path**
+
+| Backend | µs/op | Notes |
+|---|---|---|
+| SQLite | 52 µs | indexed; faster than memory at scale |
+| Memory | 519 µs | O(N) linear scan |
+| Redis | 705 µs | Lua ZPOPMIN + HSET |
+| MongoDB | 2 450 µs | findAndModify + updateOne |
+| Postgres (pgx v5) | 12 900 µs | SELECT SKIP LOCKED + UPDATE |
+
+**End-to-end — 1 000 jobs, full WorkerPool**
+
+| Backend | concurrency | jobs/s | Notes |
 |---|---|---|---|
-| Enqueue — memory | 8 600 000 | 519 ns | in-memory mutex, no I/O |
-| Enqueue — SQLite | 138 000 | 25 µs | WAL mode, single connection |
-| EnqueueBatch(100) — memory | ~10 700 000 jobs/s | 48 µs/batch | |
-| EnqueueBatch(100) — SQLite | ~130 000 jobs/s | 2.7 ms/batch | single-writer bottleneck |
-| FetchAndComplete — memory | 10 000 | 514 µs | O(N) scan; use SQLite/Postgres for large queues |
-| FetchAndComplete — SQLite | 74 000 | 51 µs | indexed; faster than memory at scale |
-| End-to-end (1000 jobs) — memory c=10 | — | — | ~2 000 jobs/s |
-| End-to-end (1000 jobs) — SQLite c=4 | — | — | ~800 jobs/s |
+| Memory | c=10 | ~2 000 | |
+| Redis | c=4 | ~1 100 | Pub/Sub notifications |
+| SQLite | c=4 | ~800 | |
+| MongoDB | c=4 | ~340 | Change Streams |
+| Postgres (pgx v5) | c=4 | ~185 | |
 
-End-to-end numbers are bounded by the 5 ms poll interval in the benchmark, not by insert/fetch throughput. In production the pgxv5 driver uses LISTEN/NOTIFY, eliminating the poll delay entirely.
+End-to-end throughput is bounded by the 5 ms poll interval used in the benchmark. In production the pgxv5 driver uses LISTEN/NOTIFY and the Redis driver uses Pub/Sub, eliminating poll latency entirely — real throughput matches the FetchAndComplete numbers above.
 
 ---
 
