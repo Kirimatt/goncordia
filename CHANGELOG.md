@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [v0.7.4] — 2026-05-07
+
+### Fixed
+- **Cassandra driver**: replaced `ScanCAS()` with `MapScanCAS()` on all LWT queries — Cassandra returns the existing row on failure, causing a scan error when no destination variables were provided
+
+---
+
+## [v0.7.3] — 2026-05-07
+
+### Changed
+- Cleaned git history (removed `refs/original` backup left by `filter-branch`)
+
+---
+
 ## [v0.7.2] — 2026-05-07
 
 ### Changed
@@ -114,6 +128,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Clock` interface + `MockClock` for deterministic time control in tests
 - MIT License
 
+[v0.7.4]: https://github.com/kirimatt/goncordia/releases/tag/v0.7.4
+[v0.7.3]: https://github.com/kirimatt/goncordia/releases/tag/v0.7.3
 [v0.7.2]: https://github.com/kirimatt/goncordia/releases/tag/v0.7.2
 [v0.7.1]: https://github.com/kirimatt/goncordia/releases/tag/v0.7.1
 [v0.7.0]: https://github.com/kirimatt/goncordia/releases/tag/v0.7.0
