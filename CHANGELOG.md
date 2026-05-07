@@ -20,6 +20,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Each state transition inserts a new higher-version row (append-only writes)
   - At-least-once semantics with brief race window between claim INSERT and FINAL confirmation
   - `NoTx` type — ClickHouse has no transactions
+- Benchmarks for Cassandra and ClickHouse added to `bench/bench_containers_test.go`
+- Updated README benchmark tables with results for all 9 backends
 
 ---
 

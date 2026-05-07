@@ -455,43 +455,53 @@ Apple M5, single process. Memory/SQLite are in-process (no network); Postgres/Mo
 
 | Backend | ns/op | Notes |
 |---|---|---|
-| Memory | 1.4 µs | in-process mutex, no I/O |
-| SQLite | 28 µs | WAL mode, single connection |
-| Redis | 107 µs | ZADD over localhost |
-| Postgres (pgx v5) | 122 µs | INSERT over localhost |
-| MongoDB | 329 µs | insertOne over localhost |
+| Memory | 0.57 µs | in-process mutex, no I/O |
+| SQLite | 27 µs | WAL mode, single connection |
+| Redis | 109 µs | ZADD over localhost |
+| Postgres (pgx v5) | 129 µs | INSERT over localhost |
+| MongoDB | 338 µs | insertOne over localhost |
+| ClickHouse | 1 378 µs | INSERT + new data part over localhost |
+| Cassandra | 7 216 µs | LWT requires Paxos quorum (3 round trips) |
 
 **EnqueueBatch(100) — 100 jobs per call**
 
 | Backend | ms/batch | jobs/s |
 |---|---|---|
-| Memory | 0.06 ms | ~1 700 000 |
-| SQLite | 2.7 ms | ~37 000 |
-| Redis | 10.4 ms | ~9 600 |
-| Postgres (pgx v5) | 12.6 ms | ~7 900 |
-| MongoDB | 34.8 ms | ~2 900 |
+| Memory | 0.06 ms | ~1 775 000 |
+| SQLite | 2.8 ms | ~35 300 |
+| Redis | 10.9 ms | ~9 200 |
+| Postgres (pgx v5) | 12.8 ms | ~7 800 |
+| MongoDB | 34.9 ms | ~2 900 |
+| ClickHouse | 150 ms | ~665 |
+| Cassandra | 708 ms | ~141 |
 
 **FetchAndComplete — hot worker loop path**
 
 | Backend | µs/op | Notes |
 |---|---|---|
-| SQLite | 52 µs | indexed; faster than memory at scale |
-| Memory | 519 µs | O(N) linear scan |
-| Redis | 705 µs | Lua ZPOPMIN + HSET |
-| MongoDB | 2 450 µs | findAndModify + updateOne |
-| Postgres (pgx v5) | 12 900 µs | SELECT SKIP LOCKED + UPDATE |
+| SQLite | 53 µs | indexed; faster than memory at scale |
+| Memory | 520 µs | O(N) linear scan |
+| Redis | 729 µs | Lua ZPOPMIN + HSET |
+| MongoDB | 2 475 µs | findAndModify + updateOne |
+| Postgres (pgx v5) | 12 190 µs | SELECT SKIP LOCKED + UPDATE |
+| ClickHouse | 14 416 µs | SELECT FINAL + INSERT new version |
+| Cassandra | 18 813 µs | SELECT avail + LWT UPDATE per job |
 
 **End-to-end — 1 000 jobs, full WorkerPool**
 
 | Backend | concurrency | jobs/s | Notes |
 |---|---|---|---|
-| Memory | c=10 | ~2 000 | |
-| Redis | c=4 | ~1 100 | Pub/Sub notifications |
+| Memory | c=10 | ~2 020 | |
+| Redis | c=4 | ~1 084 | Pub/Sub notifications |
 | SQLite | c=4 | ~800 | |
-| MongoDB | c=4 | ~340 | Change Streams |
-| Postgres (pgx v5) | c=4 | ~185 | |
+| MongoDB | c=4 | ~452 | Change Streams |
+| Postgres (pgx v5) | c=4 | ~179 | LISTEN/NOTIFY |
+| Cassandra | c=4 | ~153 | polling; LWT overhead |
+| ClickHouse | c=4 | ~148 | polling; SELECT FINAL overhead |
 
 End-to-end throughput is bounded by the 5 ms poll interval used in the benchmark. In production the pgxv5 driver uses LISTEN/NOTIFY and the Redis driver uses Pub/Sub, eliminating poll latency entirely — real throughput matches the FetchAndComplete numbers above.
+
+Cassandra's high per-operation latency comes from Lightweight Transaction consensus (Paxos, ~3 network round trips per claim). ClickHouse's overhead comes from `SELECT … FINAL` deduplication at query time; both backends are best suited for workloads where high throughput matters more than low per-job latency.
 
 ---
 
