@@ -8,7 +8,7 @@
 
 A job queue engine for Go that works with the database you already have.
 
-One `Driver[TTx]` interface parameterized by your library's native transaction type covers Postgres, MySQL, SQLite, MongoDB, Redis, and in-memory — without forcing you to adopt a new dependency.
+One `Driver[TTx]` interface parameterized by your library's native transaction type covers Postgres, MySQL, SQLite, MongoDB, Redis, Cassandra, ClickHouse, and in-memory — without forcing you to adopt a new dependency.
 
 ```go
 tx, _ := pool.Begin(ctx)
@@ -44,6 +44,8 @@ tx.Commit(ctx)  // job and order appear atomically
 | bun | `driver/bun` | `bun.Tx` | ✅ | thin adapter over stdlib |
 | MongoDB 4.0+ | `driver/mongodb` | `mongo.SessionContext` | ✅ | replica set required |
 | Redis | `driver/redis` | `NoTx` | ❌ | at-least-once; Pub/Sub notifications |
+| Cassandra 3.11+ | `driver/cassandra` | `NoTx` | ❌ | LWT claiming; ScyllaDB / DSE compatible |
+| ClickHouse 23+ | `driver/clickhouse` | `NoTx` | ❌ | ReplacingMergeTree; at-least-once |
 | In-memory | `driver/memory` | `memory.NoTx` | ✅ | no persistence; for tests |
 
 ---
@@ -74,6 +76,12 @@ go get github.com/kirimatt/goncordia/driver/mongodb go.mongodb.org/mongo-driver/
 
 # Redis
 go get github.com/kirimatt/goncordia/driver/redis github.com/redis/go-redis/v9
+
+# Cassandra / ScyllaDB
+go get github.com/kirimatt/goncordia/driver/cassandra github.com/gocql/gocql
+
+# ClickHouse
+go get github.com/kirimatt/goncordia/driver/clickhouse github.com/ClickHouse/clickhouse-go/v2
 ```
 
 ---
@@ -206,6 +214,52 @@ client.Enqueue(ctx, SendEmailArgs{To: "user@example.com", Subject: "Welcome"}, n
 
 // EnqueueTx is not supported on the Redis driver:
 // there is no rollback guarantee. Use Enqueue (post-commit pattern) instead.
+```
+
+### Cassandra / ScyllaDB
+
+```go
+import (
+    cassandradriver "github.com/kirimatt/goncordia/driver/cassandra"
+    "github.com/gocql/gocql"
+)
+
+cluster := gocql.NewCluster("localhost")
+cluster.Keyspace = "myapp"  // keyspace must already exist
+session, _ := cluster.CreateSession()
+defer session.Close()
+
+d := cassandradriver.New(session)
+d.Migrate(ctx)  // creates tables (idempotent)
+
+client := cassandradriver.NewClient(d, goncordia.ClientConfig{})
+client.Enqueue(ctx, SendEmailArgs{To: "user@example.com", Subject: "Welcome"}, nil)
+
+// EnqueueTx is identical to Enqueue on Cassandra — no rollback guarantee.
+// Use idempotent workers and unique job options for deduplication.
+```
+
+### ClickHouse
+
+```go
+import (
+    clickhousedriver "github.com/kirimatt/goncordia/driver/clickhouse"
+    "github.com/ClickHouse/clickhouse-go/v2"
+)
+
+conn, _ := clickhouse.Open(&clickhouse.Options{
+    Addr: []string{"localhost:9000"},
+    Auth: clickhouse.Auth{Database: "myapp"},
+})
+
+d := clickhousedriver.New(conn)
+d.Migrate(ctx)  // creates ReplacingMergeTree tables (idempotent)
+
+client := clickhousedriver.NewClient(d, goncordia.ClientConfig{})
+client.Enqueue(ctx, SendEmailArgs{To: "user@example.com", Subject: "Welcome"}, nil)
+
+// ClickHouse has no transactions. Jobs use at-least-once delivery — workers
+// should be idempotent. Best suited for high-throughput analytics pipelines.
 ```
 
 ### SQLite (no Docker, good for tests)
@@ -511,7 +565,9 @@ goncordia/
 │   ├── gorm/              # gorm adapter (wraps stdlib)
 │   ├── bun/               # bun adapter (wraps stdlib)
 │   ├── mongodb/           # MongoDB 4.0+ replica set
-│   └── redis/             # Redis (at-least-once; Pub/Sub notifications)
+│   ├── redis/             # Redis (at-least-once; Pub/Sub notifications)
+│   ├── cassandra/         # Cassandra 3.11+ / ScyllaDB (LWT claiming; at-least-once)
+│   └── clickhouse/        # ClickHouse 23+ (ReplacingMergeTree; at-least-once)
 ├── otel/                  # OpenTelemetry middleware (spans + metrics)
 └── internal/clock/        # Clock interface + MockClock
 ```
@@ -526,5 +582,7 @@ goncordia/
 | gorm / bun | Atomic with business tx | Extracts underlying `*sql.Tx` |
 | MongoDB | Atomic with business tx | Multi-document transaction on replica set |
 | Redis | **None** — at-least-once | Pub/Sub + idempotent workers |
+| Cassandra | **None** — at-least-once | LWT for claiming; no cross-statement tx |
+| ClickHouse | **None** — at-least-once | ReplacingMergeTree + FINAL; no transactions |
 | In-memory | Atomic (in-process) | Single mutex |
 

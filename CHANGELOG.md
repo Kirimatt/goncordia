@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [v0.7.0] — 2026-05-07
+
+### Added
+- **Cassandra driver** (`driver/cassandra`): Apache Cassandra 3.11+, ScyllaDB, and DataStax Enterprise via `gocql`
+  - Lightweight transactions (`IF NOT EXISTS` / `IF condition`) for atomic job claiming and unique-key deduplication
+  - Two-table schema: `goncordia_jobs` (by id) + `goncordia_jobs_avail` (by queue/run\_at) for efficient ordered fetch
+  - Leader election via LWT INSERT/UPDATE on `goncordia_leaders`
+  - `NoTx` type — no rollback guarantee; `EnqueueTx` behaves like `Enqueue`
+- **ClickHouse driver** (`driver/clickhouse`): ClickHouse 23+ via `clickhouse-go/v2`
+  - `ReplacingMergeTree(version)` on all three tables; reads use `SELECT … FINAL`
+  - Each state transition inserts a new higher-version row (append-only writes)
+  - At-least-once semantics with brief race window between claim INSERT and FINAL confirmation
+  - `NoTx` type — ClickHouse has no transactions
+
+---
+
 ## [v0.6.0] — 2026-05-07
 
 ### Added
@@ -82,6 +98,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Clock` interface + `MockClock` for deterministic time control in tests
 - MIT License
 
+[v0.7.0]: https://github.com/kirimatt/goncordia/releases/tag/v0.7.0
 [v0.6.0]: https://github.com/kirimatt/goncordia/releases/tag/v0.6.0
 [v0.5.0]: https://github.com/kirimatt/goncordia/releases/tag/v0.5.0
 [v0.4.0]: https://github.com/kirimatt/goncordia/releases/tag/v0.4.0
