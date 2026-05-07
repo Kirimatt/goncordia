@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [v0.8.0] — 2026-05-08
+
+### Added
+- **Amazon DynamoDB driver** (`driver/dynamodb`): Amazon DynamoDB via AWS SDK for Go v2
+  - Four-table schema: `goncordia_jobs`, `goncordia_uniq`, `goncordia_queues`, `goncordia_leaders`
+  - GSI `gsi_queue_state` (PK: `queue_state = "{queue}#{state}"`, SK: `run_at`) for ordered, efficient job polling
+  - Conditional `UpdateItem` with version + state check for lock-free concurrent job claiming
+  - Unique-key deduplication via `PutItem` with `attribute_not_exists` condition on `goncordia_uniq`
+  - Leader election via conditional `PutItem` with TTL expiry check on `goncordia_leaders`
+  - `NoTx` type — DynamoDB conditional writes cannot span tables; `EnqueueTx` behaves like `Enqueue`
+  - Compatible with DynamoDB Local for integration tests
+- DynamoDB benchmarks added to `bench/bench_containers_test.go`
+- Updated README with DynamoDB backend table entry, installation instructions, quick-start example, and transaction guarantees
+
+---
+
 ## [v0.7.4] — 2026-05-07
 
 ### Fixed
@@ -128,6 +144,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Clock` interface + `MockClock` for deterministic time control in tests
 - MIT License
 
+[v0.8.0]: https://github.com/kirimatt/goncordia/releases/tag/v0.8.0
 [v0.7.4]: https://github.com/kirimatt/goncordia/releases/tag/v0.7.4
 [v0.7.3]: https://github.com/kirimatt/goncordia/releases/tag/v0.7.3
 [v0.7.2]: https://github.com/kirimatt/goncordia/releases/tag/v0.7.2

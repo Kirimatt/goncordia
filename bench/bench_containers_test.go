@@ -9,6 +9,10 @@ import (
 	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials"
+	awsdynamodb "github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/gocql/gocql"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -26,6 +30,7 @@ import (
 	"github.com/kirimatt/goncordia/driver"
 	cassandradriver "github.com/kirimatt/goncordia/driver/cassandra"
 	clickhousedriver "github.com/kirimatt/goncordia/driver/clickhouse"
+	dynamodbdriver "github.com/kirimatt/goncordia/driver/dynamodb"
 	mongodriver "github.com/kirimatt/goncordia/driver/mongodb"
 	pgxv5driver "github.com/kirimatt/goncordia/driver/pgxv5"
 	redisdriver "github.com/kirimatt/goncordia/driver/redis"
@@ -37,6 +42,7 @@ var (
 	benchRedisDriver      driver.Driver[redisdriver.NoTx]
 	benchCassandraDriver  driver.Driver[cassandradriver.NoTx]
 	benchClickHouseDriver driver.Driver[clickhousedriver.NoTx]
+	benchDynamoDBDriver   driver.Driver[dynamodbdriver.NoTx]
 )
 
 func TestMain(m *testing.M) {
@@ -61,6 +67,10 @@ func TestMain(m *testing.M) {
 	}
 	if d, cleanup := startClickHouse(ctx); d != nil {
 		benchClickHouseDriver = d
+		cleanups = append(cleanups, cleanup)
+	}
+	if d, cleanup := startDynamoDB(ctx); d != nil {
+		benchDynamoDBDriver = d
 		cleanups = append(cleanups, cleanup)
 	}
 
@@ -253,6 +263,48 @@ func startClickHouse(ctx context.Context) (driver.Driver[clickhousedriver.NoTx],
 	}
 }
 
+func startDynamoDB(ctx context.Context) (driver.Driver[dynamodbdriver.NoTx], func()) {
+	ctr, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
+		ContainerRequest: testcontainers.ContainerRequest{
+			Image:        "amazon/dynamodb-local:latest",
+			ExposedPorts: []string{"8000/tcp"},
+			WaitingFor: wait.ForHTTP("/").
+				WithPort("8000/tcp").
+				WithStatusCodeMatcher(func(code int) bool { return code >= 100 }),
+		},
+		Started: true,
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "bench: skip dynamodb benchmarks: %v\n", err)
+		return nil, nil
+	}
+	addr, err := ctr.Endpoint(ctx, "")
+	if err != nil {
+		ctr.Terminate(ctx) //nolint:errcheck
+		return nil, nil
+	}
+	cfg, err := awsconfig.LoadDefaultConfig(ctx,
+		awsconfig.WithRegion("us-east-1"),
+		awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider("dummy", "dummy", "")),
+	)
+	if err != nil {
+		ctr.Terminate(ctx) //nolint:errcheck
+		return nil, nil
+	}
+	svc := awsdynamodb.NewFromConfig(cfg, func(o *awsdynamodb.Options) {
+		o.BaseEndpoint = aws.String(fmt.Sprintf("http://%s", addr))
+		o.EndpointDiscovery = awsdynamodb.EndpointDiscoveryOptions{
+			EnableEndpointDiscovery: aws.EndpointDiscoveryDisabled,
+		}
+	})
+	d := dynamodbdriver.New(svc)
+	if err := d.Migrate(ctx); err != nil {
+		ctr.Terminate(ctx) //nolint:errcheck
+		return nil, nil
+	}
+	return d, func() { ctr.Terminate(ctx) } //nolint:errcheck
+}
+
 // ---- Enqueue ----
 
 func BenchmarkEnqueue_Postgres(b *testing.B) {
@@ -288,6 +340,13 @@ func BenchmarkEnqueue_ClickHouse(b *testing.B) {
 		b.Skip("clickhouse not available")
 	}
 	benchmarkEnqueue(b, benchClickHouseDriver)
+}
+
+func BenchmarkEnqueue_DynamoDB(b *testing.B) {
+	if benchDynamoDBDriver == nil {
+		b.Skip("dynamodb not available")
+	}
+	benchmarkEnqueue(b, benchDynamoDBDriver)
 }
 
 // ---- EnqueueBatch(100) ----
@@ -327,6 +386,13 @@ func BenchmarkEnqueueBatch100_ClickHouse(b *testing.B) {
 	benchmarkEnqueueBatch(b, benchClickHouseDriver, 100)
 }
 
+func BenchmarkEnqueueBatch100_DynamoDB(b *testing.B) {
+	if benchDynamoDBDriver == nil {
+		b.Skip("dynamodb not available")
+	}
+	benchmarkEnqueueBatch(b, benchDynamoDBDriver, 100)
+}
+
 // ---- FetchAndComplete ----
 
 func BenchmarkFetchAndComplete_Postgres(b *testing.B) {
@@ -364,6 +430,13 @@ func BenchmarkFetchAndComplete_ClickHouse(b *testing.B) {
 	benchmarkFetchAndComplete(b, benchClickHouseDriver)
 }
 
+func BenchmarkFetchAndComplete_DynamoDB(b *testing.B) {
+	if benchDynamoDBDriver == nil {
+		b.Skip("dynamodb not available")
+	}
+	benchmarkFetchAndComplete(b, benchDynamoDBDriver)
+}
+
 // ---- End-to-end ----
 
 func BenchmarkEndToEnd_Postgres_c4(b *testing.B) {
@@ -399,4 +472,11 @@ func BenchmarkEndToEnd_ClickHouse_c4(b *testing.B) {
 		b.Skip("clickhouse not available")
 	}
 	benchmarkEndToEnd(b, benchClickHouseDriver, 4)
+}
+
+func BenchmarkEndToEnd_DynamoDB_c4(b *testing.B) {
+	if benchDynamoDBDriver == nil {
+		b.Skip("dynamodb not available")
+	}
+	benchmarkEndToEnd(b, benchDynamoDBDriver, 4)
 }

@@ -8,7 +8,7 @@
 
 A job queue engine for Go that works with the database you already have.
 
-One `Driver[TTx]` interface parameterized by your library's native transaction type covers Postgres, MySQL, SQLite, MongoDB, Redis, Cassandra, ClickHouse, and in-memory — without forcing you to adopt a new dependency.
+One `Driver[TTx]` interface parameterized by your library's native transaction type covers Postgres, MySQL, SQLite, MongoDB, Redis, Cassandra, ClickHouse, DynamoDB, and in-memory — without forcing you to adopt a new dependency.
 
 ```go
 tx, _ := pool.Begin(ctx)
@@ -46,6 +46,7 @@ tx.Commit(ctx)  // job and order appear atomically
 | Redis | `driver/redis` | `NoTx` | ❌ | at-least-once; Pub/Sub notifications |
 | Cassandra 3.11+ | `driver/cassandra` | `NoTx` | ❌ | LWT claiming; ScyllaDB / DSE compatible |
 | ClickHouse 23+ | `driver/clickhouse` | `NoTx` | ❌ | ReplacingMergeTree; at-least-once |
+| Amazon DynamoDB | `driver/dynamodb` | `NoTx` | ❌ | conditional writes; at-least-once |
 | In-memory | `driver/memory` | `memory.NoTx` | ✅ | no persistence; for tests |
 
 ---
@@ -82,6 +83,9 @@ go get github.com/kirimatt/goncordia/driver/cassandra github.com/gocql/gocql
 
 # ClickHouse
 go get github.com/kirimatt/goncordia/driver/clickhouse github.com/ClickHouse/clickhouse-go/v2
+
+# Amazon DynamoDB
+go get github.com/kirimatt/goncordia/driver/dynamodb github.com/aws/aws-sdk-go-v2/service/dynamodb
 ```
 
 ---
@@ -260,6 +264,29 @@ client.Enqueue(ctx, SendEmailArgs{To: "user@example.com", Subject: "Welcome"}, n
 
 // ClickHouse has no transactions. Jobs use at-least-once delivery — workers
 // should be idempotent. Best suited for high-throughput analytics pipelines.
+```
+
+### Amazon DynamoDB
+
+```go
+import (
+    "github.com/aws/aws-sdk-go-v2/config"
+    "github.com/aws/aws-sdk-go-v2/service/dynamodb"
+    dynamodbdriver "github.com/kirimatt/goncordia/driver/dynamodb"
+)
+
+cfg, _ := config.LoadDefaultConfig(ctx)
+svc := dynamodb.NewFromConfig(cfg)
+
+d := dynamodbdriver.New(svc)
+d.Migrate(ctx)  // creates goncordia_jobs + goncordia_uniq + goncordia_queues + goncordia_leaders (idempotent)
+
+client := dynamodbdriver.NewClient(d, goncordia.ClientConfig{})
+client.Enqueue(ctx, SendEmailArgs{To: "user@example.com", Subject: "Welcome"}, nil)
+
+// DynamoDB has no cross-table transactions. EnqueueTx behaves like Enqueue.
+// Unique-key deduplication uses PutItem with attribute_not_exists condition.
+// Jobs are claimed with conditional UpdateItem — safe for concurrent workers.
 ```
 
 ### SQLite (no Docker, good for tests)
@@ -577,7 +604,8 @@ goncordia/
 │   ├── mongodb/           # MongoDB 4.0+ replica set
 │   ├── redis/             # Redis (at-least-once; Pub/Sub notifications)
 │   ├── cassandra/         # Cassandra 3.11+ / ScyllaDB (LWT claiming; at-least-once)
-│   └── clickhouse/        # ClickHouse 23+ (ReplacingMergeTree; at-least-once)
+│   ├── clickhouse/        # ClickHouse 23+ (ReplacingMergeTree; at-least-once)
+│   └── dynamodb/          # Amazon DynamoDB (conditional writes; at-least-once)
 ├── otel/                  # OpenTelemetry middleware (spans + metrics)
 └── internal/clock/        # Clock interface + MockClock
 ```
@@ -594,5 +622,6 @@ goncordia/
 | Redis | **None** — at-least-once | Pub/Sub + idempotent workers |
 | Cassandra | **None** — at-least-once | LWT for claiming; no cross-statement tx |
 | ClickHouse | **None** — at-least-once | ReplacingMergeTree + FINAL; no transactions |
+| DynamoDB | **None** — at-least-once | Conditional writes; no cross-table tx |
 | In-memory | Atomic (in-process) | Single mutex |
 
