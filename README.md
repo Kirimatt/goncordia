@@ -200,7 +200,7 @@ d := redisdriver.New(rdb)
 d.Migrate(ctx)  // pings Redis to verify connectivity
 
 client := redisdriver.NewClient(d, goncordia.ClientConfig{})
-client.Enqueue(ctx, MyJob{...}, nil)
+client.Enqueue(ctx, SendEmailArgs{To: "user@example.com", Subject: "Welcome"}, nil)
 
 // EnqueueTx is not supported on the Redis driver:
 // there is no rollback guarantee. Use Enqueue (post-commit pattern) instead.
@@ -240,7 +240,8 @@ scheduled ──► available   (when run_at is reached)
 ## InsertOpts
 
 ```go
-client.Enqueue(ctx, MyJobArgs{...}, &core.InsertOpts{
+maxRetry := 3
+client.Enqueue(ctx, SendEmailArgs{To: "user@example.com", Subject: "Welcome"}, &core.InsertOpts{
     Queue:    "critical",                    // override default queue
     Priority: 10,                            // higher = processed first
     RunAt:    time.Now().Add(time.Hour),     // schedule for later
@@ -250,7 +251,7 @@ client.Enqueue(ctx, MyJobArgs{...}, &core.InsertOpts{
         ByQueue: true,
     },
 
-    MaxRetry: intPtr(3),
+    MaxRetry: &maxRetry,
     Tags:     []string{"user:42"},
 })
 ```
@@ -263,10 +264,10 @@ client.Enqueue(ctx, MyJobArgs{...}, &core.InsertOpts{
 goncordia.WorkerConfig{
     Queues:          []string{"default", "critical"},
     Concurrency:     20,
-    PollInterval:    500 * time.Millisecond,  // fallback when no push notifications
+    PollInterval:    500 * time.Millisecond,         // fallback when no push notifications
     RetryPolicy:     core.ExponentialRetry{Base: time.Second, Max: time.Hour},
     ShutdownTimeout: 30 * time.Second,
-    Clock:           clk,  // inject MockClock in tests
+    Clock:           clock.NewMock(time.Now()),       // omit in production; inject for tests
 }
 ```
 
@@ -333,6 +334,8 @@ core.FixedRetry{Delay: 30 * time.Second}
 core.NoRetry{}
 
 // Custom
+import "github.com/kirimatt/goncordia/internal/clock"
+
 type MyPolicy struct{}
 func (MyPolicy) NextRetryAt(attempt int, err error, clk clock.Clock) time.Time {
     return clk.Now().Add(time.Duration(attempt) * time.Minute)
@@ -494,8 +497,3 @@ goncordia/
 | Redis | **None** — at-least-once | Pub/Sub + idempotent workers |
 | In-memory | Atomic (in-process) | Single mutex |
 
----
-
-## License
-
-MIT
