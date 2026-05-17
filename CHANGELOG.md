@@ -21,6 +21,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [v0.14.0] — 2026-05-17
+
+### Added
+- `context7.json` — Context7 MCP configuration: project title, description, indexing rules, and version history for AI assistant discovery
+- `llms.txt` — standard AI crawler file describing the project and linking to documentation
+- `CLAUDE.md` — context file for AI coding assistants (Claude Code reads this in projects that depend on goncordia)
+
+### Changed
+- `context7.json`: added `previousVersions` (v0.7.0 – v0.13.0) for multi-version indexing in Context7
+
+---
+
+## [v0.13.0] — 2026-05-17
+
+### Added
+- Competitor comparison table in README (River, Asynq, Machinery) with honest per-feature breakdown
+- Transactional outbox pattern description in README intro
+
+### Fixed
+- `gofmt` formatting in `bench/bench_containers_test.go`, `driver/dynamodb/dynamodb.go`, `driver/dynamodb/executor.go`, `driver/firestore/executor.go`, `driver/firestore/firestore.go` — was causing CI failures
+
+---
+
 ## [v0.11.0] — 2026-05-08
 
 ### Added
