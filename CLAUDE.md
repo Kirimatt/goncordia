@@ -125,6 +125,42 @@ cs := goncordia.NewCronScheduler(d, []goncordia.PeriodicJob{
 go cs.Start(ctx)
 ```
 
+## Push notifications — how LISTEN/NOTIFY works (pgxv5)
+
+No user code required. When `d.Migrate(ctx)` runs, it creates a PostgreSQL trigger that calls `pg_notify('goncordia:{queue}', job_id)` after every INSERT into `goncordia_jobs`. The WorkerPool automatically calls `LISTEN "goncordia:{queue}"` on a dedicated connection. When a job is enqueued, the trigger fires immediately and the worker wakes up without waiting for the next poll cycle.
+
+```
+Enqueue() → INSERT → trigger → pg_notify('goncordia:default', '42')
+                                    ↓
+WorkerPool (LISTEN) ← notification arrives → fetch job immediately
+```
+
+If the LISTEN connection drops or a notification is missed, the worker falls back to polling at `PollInterval` — no jobs are lost.
+
+Push notification support by backend:
+- **pgxv5** — LISTEN/NOTIFY via PostgreSQL trigger (automatic, zero latency)
+- **stdlib (Postgres)** — polling only (`ListenNotify: false`)
+- **MongoDB** — Change Streams
+- **Redis** — Pub/Sub
+- **Cassandra, ClickHouse, DynamoDB, Firestore** — polling only
+
+## At-least-once delivery for non-transactional backends
+
+Redis, Cassandra, ClickHouse, and DynamoDB do not support transactions. `EnqueueTx` on these backends behaves identically to `Enqueue` — there is no rollback if the surrounding business transaction fails. Use the post-commit enqueue pattern:
+
+```go
+// Safe pattern for non-transactional backends
+err := db.Transaction(func(tx *sql.Tx) error {
+    return createOrder(tx, order)
+})
+if err == nil {
+    // Enqueue only after the business transaction committed
+    client.Enqueue(ctx, SendConfirmationArgs{OrderID: order.ID}, nil)
+}
+```
+
+Workers on these backends must be **idempotent** — a job may be executed more than once if a worker crashes after claiming but before completing. Use `UniqueOpts` or application-level deduplication (e.g. check-then-insert with a unique key) to guard against duplicates.
+
 ## Common mistakes
 
 - **Redis / Cassandra / ClickHouse / DynamoDB**: `EnqueueTx` on these backends has no rollback guarantee — it behaves like `Enqueue`. Use the post-commit enqueue pattern for at-least-once delivery.
