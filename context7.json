@@ -13,6 +13,7 @@
     "Firestore requires a composite index created manually: collection goncordia_jobs, fields queue ASC + state ASC + run_at ASC"
   ],
   "previousVersions": [
+    { "tag": "v0.14.0" },
     { "tag": "v0.13.0" },
     { "tag": "v0.11.0" },
     { "tag": "v0.10.0" },

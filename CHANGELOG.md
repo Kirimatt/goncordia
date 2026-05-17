@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [v0.15.0] — 2026-05-17
+
+### Added
+- **CLAUDE.md**: explicit documentation of LISTEN/NOTIFY mechanism for `driver/pgxv5`
+  - `Migrate()` creates a PostgreSQL trigger that calls `pg_notify('goncordia:{queue}', job_id)` after every INSERT
+  - WorkerPool automatically issues `LISTEN "goncordia:{queue}"` on a dedicated connection — no user code required
+  - Fallback to `PollInterval` when a notification is missed — no jobs are lost
+  - Push notification support table by backend (pgxv5, MongoDB, Redis vs polling-only)
+- **CLAUDE.md**: at-least-once delivery section for Redis, Cassandra, ClickHouse, DynamoDB
+  - Post-commit enqueue pattern with code example
+  - Idempotency requirement for workers on non-transactional backends
+
+---
+
 ## [v0.14.0] — 2026-05-17
 
 ### Added
