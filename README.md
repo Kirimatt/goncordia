@@ -10,6 +10,8 @@ A job queue engine for Go that works with the database you already have.
 
 One `Driver[TTx]` interface parameterized by your library's native transaction type covers Postgres, MySQL, SQLite, MongoDB, Redis, Cassandra, ClickHouse, DynamoDB, Firestore, and in-memory — without forcing you to adopt a new dependency.
 
+`EnqueueTx` implements the [transactional outbox pattern](https://microservices.io/patterns/data/transactional-outbox.html): the job is written inside your existing transaction and becomes visible to workers only after commit. If the transaction rolls back, the job disappears — no separate relay process, no dual-write risk.
+
 ```go
 tx, _ := pool.Begin(ctx)
 _, _ = queries.CreateOrder(ctx, tx, order)
@@ -49,6 +51,30 @@ tx.Commit(ctx)  // job and order appear atomically
 | Amazon DynamoDB | `driver/dynamodb` | `NoTx` | ❌ | conditional writes; at-least-once |
 | Cloud Firestore | `driver/firestore` | `*firestore.Transaction` | ✅ | RunTransaction; composite index required |
 | In-memory | `driver/memory` | `memory.NoTx` | ✅ | no persistence; for tests |
+
+---
+
+## How it compares
+
+| | goncordia | [River](https://github.com/riverqueue/river) | [Asynq](https://github.com/hibiken/asynq) | [Machinery](https://github.com/RichardKnop/machinery) |
+|---|---|---|---|---|
+| Backends | Postgres, MySQL, SQLite, MongoDB, Redis, Cassandra, ClickHouse, DynamoDB, Firestore, memory | **PostgreSQL only** | **Redis only** | Redis, RabbitMQ, SQS, MongoDB |
+| Transactional insert (outbox pattern) | ✅ where backend supports tx | ✅ Postgres only | ❌ | ❌ |
+| Generic `Driver[TTx]` interface | ✅ | ✅ (Postgres only) | — | — |
+| Scheduled / cron jobs | ✅ | ✅ | ✅ | ✅ |
+| Unique jobs | ✅ | ✅ | ✅ | ❌ |
+| Priority queues | ✅ | ✅ | ✅ | ❌ |
+| Push notifications | ✅ LISTEN/NOTIFY, Change Streams, Pub/Sub | ✅ LISTEN/NOTIFY | ✅ Pub/Sub | ❌ polling |
+| Web UI | ❌ | ✅ (River UI, Pro) | ✅ (asynqmon) | ❌ |
+| Workflow primitives (chains, chords) | ❌ | ❌ | ❌ | ✅ |
+
+**Choose goncordia** when you want the transactional outbox pattern and don't want to introduce Redis or a dedicated Postgres instance — it works with whatever database your application already uses.
+
+**Choose River** if you're on Postgres and want a mature, battle-tested library with a polished UI and a professional support tier.
+
+**Choose Asynq** if Redis is already in your stack, you don't need transactional inserts, and you want a built-in web dashboard.
+
+**Choose Machinery** if you need Celery-style workflow primitives (chains, chords, groups) across RabbitMQ or SQS.
 
 ---
 
