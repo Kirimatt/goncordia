@@ -347,9 +347,9 @@ func startFirestore(ctx context.Context) (driver.Driver[*firestore.Transaction],
 	}
 	d := firestoredriver.New(client)
 	return d, func() {
-		client.Close()                        //nolint:errcheck
+		client.Close()                         //nolint:errcheck
 		os.Unsetenv("FIRESTORE_EMULATOR_HOST") //nolint:errcheck
-		ctr.Terminate(ctx)                    //nolint:errcheck
+		ctr.Terminate(ctx)                     //nolint:errcheck
 	}
 }
 

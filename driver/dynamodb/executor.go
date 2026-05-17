@@ -129,7 +129,7 @@ type dynamoJob struct {
 	State       string   `dynamodbav:"state"`
 	QueueState  string   `dynamodbav:"queue_state"` // "{queue}#{state}" — GSI PK
 	Priority    int      `dynamodbav:"priority"`
-	RunAt       string   `dynamodbav:"run_at"`      // RFC3339Nano — GSI SK
+	RunAt       string   `dynamodbav:"run_at"` // RFC3339Nano — GSI SK
 	CreatedAt   string   `dynamodbav:"created_at"`
 	AttemptedAt string   `dynamodbav:"attempted_at"`
 	FinalizedAt string   `dynamodbav:"finalized_at"`
