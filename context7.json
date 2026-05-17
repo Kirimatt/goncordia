@@ -11,5 +11,13 @@
     "MongoDB requires a replica set — standalone MongoDB will fail at New()",
     "SQLite requires db.SetMaxOpenConns(1) — only one writer allowed",
     "Firestore requires a composite index created manually: collection goncordia_jobs, fields queue ASC + state ASC + run_at ASC"
+  ],
+  "previousVersions": [
+    { "tag": "v0.11.0" },
+    { "tag": "v0.10.0" },
+    { "tag": "v0.9.0" },
+    { "tag": "v0.8.0" },
+    { "tag": "v0.7.5" },
+    { "tag": "v0.7.0" }
   ]
 }
