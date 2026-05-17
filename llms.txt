@@ -1,0 +1,27 @@
+# goncordia
+
+> Transactional job queue engine for Go. One `Driver[TTx]` interface covers Postgres, MySQL, SQLite, MongoDB, Redis, Cassandra, ClickHouse, DynamoDB, Firestore, and in-memory — without forcing you to adopt a new dependency. Implements the transactional outbox pattern via `EnqueueTx`.
+
+## Key concept
+
+`EnqueueTx` enqueues a job inside your existing database transaction. The job becomes visible to workers only if the transaction commits — no dual-write risk, no relay process needed.
+
+```go
+tx, _ := pool.Begin(ctx)
+queries.CreateOrder(ctx, tx, order)
+client.EnqueueTx(ctx, tx, SendConfirmationArgs{OrderID: order.ID}, nil)
+tx.Commit(ctx)  // job and order appear atomically
+```
+
+## Supported backends
+
+Postgres (pgx v5, database/sql, gorm, bun), MySQL, SQLite, MongoDB, Redis, Cassandra, ClickHouse, Amazon DynamoDB, Cloud Firestore, in-memory.
+
+Transactional inserts supported on: Postgres, MySQL, SQLite, MongoDB, Firestore, in-memory.
+
+## Documentation
+
+- [README](https://github.com/kirimatt/goncordia/blob/main/README.md): Full documentation — features, driver table, quick start per backend, benchmarks, retry policies, cron jobs, OpenTelemetry
+- [CLAUDE.md](https://github.com/kirimatt/goncordia/blob/main/CLAUDE.md): Concise AI assistant reference — driver selection, job definition, EnqueueTx, testing, common mistakes
+- [pkg.go.dev](https://pkg.go.dev/github.com/kirimatt/goncordia): Go API reference
+- [CHANGELOG](https://github.com/kirimatt/goncordia/blob/main/CHANGELOG.md): Version history
