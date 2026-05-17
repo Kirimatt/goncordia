@@ -156,7 +156,7 @@ func (d *Driver) Capabilities() driver.Capabilities {
 	return driver.Capabilities{
 		NativeTx:      false,
 		ListenNotify:  false,
-		ChangeStreams:  false,
+		ChangeStreams: false,
 		SkipLocked:    false,
 		UniqueJobs:    true, // via PutItem ConditionExpression attribute_not_exists
 		AdvisoryLocks: false,

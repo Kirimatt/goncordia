@@ -581,7 +581,7 @@ func jobDelete(ctx context.Context, client *firestore.Client, id string) error {
 		return err
 	}
 	if j.UniqueKey != "" {
-		client.Collection(colUniq).Doc(j.Queue+"#"+j.UniqueKey).Delete(ctx) //nolint:errcheck
+		client.Collection(colUniq).Doc(j.Queue + "#" + j.UniqueKey).Delete(ctx) //nolint:errcheck
 	}
 	return nil
 }
